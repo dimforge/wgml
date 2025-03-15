@@ -1,0 +1,33 @@
+[workspace]
+members = [
+    "crates/wgml", "crates/wgml-chat", "crates/wgml-bench"
+]
+resolver = "2"
+
+[workspace.dependencies]
+nalgebra = { version = "0.33.1", features = ["convert-bytemuck"] }
+parry2d = { version = "0.18", features = ["bytemuck", "encase"] }
+parry3d = { version = "0.18", features = ["bytemuck", "encase"] }
+wgpu = { version = "23", features = ["naga-ir"] }
+bytemuck = { version = "1", features = ["derive"] }
+anyhow = "1"
+async-channel = "2"
+naga_oil = "0.16"
+thiserror = "1"
+
+encase = { version = "0.10.0", features = ["nalgebra"] }
+
+[workspace.lints]
+rust.unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(feature, values("dim2", "dim3"))'
+] }
+
+[profile.release]
+opt-level = 'z'
+
+[patch.crates-io]
+wgcore-derive = { path = "../wgmath/crates/wgcore-derive" }
+wgcore = { path = "../wgmath/crates/wgcore" }
+wgebra = { path = "../wgmath/crates/wgebra" }
+
+encase = { path = "../encase" }

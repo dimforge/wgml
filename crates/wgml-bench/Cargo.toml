@@ -1,0 +1,42 @@
+[package]
+name = "wgml-bench"
+version = "0.1.0"
+authors = ["Sébastien Crozet <sebcrozet@dimforge.com>"]
+edition = "2021"
+rust-version = "1.65"
+
+[dependencies]
+wgcore = "0.2"
+wgebra = "0.2"
+wgml = {  version = "0.2", path = "../wgml" }
+
+wgpu = { workspace = true }
+
+nalgebra = { version = "0.33", features = ["rand"] }
+anyhow = "1"
+async-std = { version = "1", features = ["attributes"] }
+rand = { version = "0.8", features = ["getrandom"] }
+plotly = "0.12.1"
+indexmap = "2.7.1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# native:
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tracing-subscriber = "0.3"
+futures = "0.3.28"
+memmap2 = "0.9.4"
+colored = "3.0.0"
+
+# web:
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+
+
+[profile.release]
+opt-level = 2 # fast and small wasm
+
+# Optimize all dependencies even in debug builds:
+[profile.dev.package."*"]
+opt-level = 2

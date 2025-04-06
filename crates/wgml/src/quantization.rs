@@ -167,20 +167,20 @@ const K_SCALE_SIZE: usize = 12;
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Copy, Clone, Debug, PartialEq)]
 #[repr(C)]
 // See https://github.com/ggerganov/ggml/blob/fca1caafea7de9fbd7efc733b9818f9cf2da3050/src/ggml-quants.h#L161-L165
-pub struct BlockQ8_K {
+pub struct BlockQ8K {
     pub d: f32,                  // delta
     pub qs: [i8; QK_K],          // quants
     pub bsums: [i16; QK_K / 16], // sum of quants in groups of 16
 }
 
-impl QuantizedValue for BlockQ8_K {
+impl QuantizedValue for BlockQ8K {
     const DEQUANTIZED_LEN: usize = QK_K;
 }
 
-impl Distribution<BlockQ8_K> for Standard {
-    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> BlockQ8_K {
+impl Distribution<BlockQ8K> for Standard {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> BlockQ8K {
         // TODO: are all bit representations valid?
-        BlockQ8_K {
+        BlockQ8K {
             d: rng.gen(),
             qs: [0; QK_K].map(|_| rng.gen()),
             bsums: rng.gen(),
@@ -188,7 +188,7 @@ impl Distribution<BlockQ8_K> for Standard {
     }
 }
 
-impl BlockQ8_K {
+impl BlockQ8K {
     pub fn dequantize(self) -> [f32; QK_K] {
         let mut result = [0.0; QK_K];
         for j in 0..QK_K {
@@ -201,14 +201,14 @@ impl BlockQ8_K {
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Copy, Clone, Debug, PartialEq)]
 #[repr(C)]
 // See https://github.com/ggerganov/ggml/blob/fca1caafea7de9fbd7efc733b9818f9cf2da3050/src/ggml-quants.h#L152-L157
-pub struct BlockQ6_K {
+pub struct BlockQ6K {
     pub ql: [u8; QK_K / 2],      // quants, lower 4 bits
     pub qh: [u8; QK_K / 4],      // quants, upper 2 bits
     pub scales: [i8; QK_K / 16], // scales, quantized with 8 bits
     pub d: u16,                  // super-block scale
 }
 
-impl BlockQ6_K {
+impl BlockQ6K {
     pub const ELEMENTS_PER_BLOCK: usize = QK_K;
     // https://github.com/ggerganov/ggml/blob/a3c0188a4b5d3dec052ff87c9f773baa53631d70/src/ggml-quants.c#L2970
     pub fn dequantize(self) -> [f32; QK_K] {
@@ -246,7 +246,7 @@ impl BlockQ6_K {
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Copy, Clone, Debug, PartialEq)]
 #[repr(C)]
 // See https://github.com/ggerganov/ggml/blob/fca1caafea7de9fbd7efc733b9818f9cf2da3050/src/ggml-quants.h#L130-L135
-pub struct BlockQ5_K {
+pub struct BlockQ5K {
     pub d: u16,                     // super-block scale
     pub dmin: u16,                  // super-block scale for quantized mins
     pub scales: [u8; K_SCALE_SIZE], // scales and mins, quantized with 6 bits
@@ -254,14 +254,14 @@ pub struct BlockQ5_K {
     pub qs: [u8; QK_K / 2],         // quants, low 4 bits
 }
 
-impl QuantizedValue for BlockQ5_K {
+impl QuantizedValue for BlockQ5K {
     const DEQUANTIZED_LEN: usize = QK_K;
 }
 
-impl Distribution<BlockQ5_K> for Standard {
-    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> BlockQ5_K {
+impl Distribution<BlockQ5K> for Standard {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> BlockQ5K {
         // TODO: are all bit representations valid?
-        BlockQ5_K {
+        BlockQ5K {
             d: rng.gen(),
             dmin: rng.gen(),
             scales: rng.gen(),
@@ -271,7 +271,7 @@ impl Distribution<BlockQ5_K> for Standard {
     }
 }
 
-impl BlockQ5_K {
+impl BlockQ5K {
     pub fn dequantize(self) -> [f32; QK_K] {
         let mut result = [0.0; QK_K];
         let mut iq = 0;
@@ -319,21 +319,21 @@ impl BlockQ5_K {
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Copy, Clone, Debug, PartialEq)]
 #[repr(C)]
 // See https://github.com/ggerganov/ggml/blob/fca1caafea7de9fbd7efc733b9818f9cf2da3050/src/ggml-quants.h#L109-L113
-pub struct BlockQ4_K {
+pub struct BlockQ4K {
     pub d: u16,                     // super-block scales for quantized scales
     pub dmin: u16,                  // super-block scale for quantized mins
     pub scales: [u8; K_SCALE_SIZE], // scales and mins, quantized with 6 bits
     pub qs: [u8; QK_K / 2],         // 4-bit quants
 }
 
-impl QuantizedValue for BlockQ4_K {
+impl QuantizedValue for BlockQ4K {
     const DEQUANTIZED_LEN: usize = QK_K;
 }
 
-impl Distribution<BlockQ4_K> for Standard {
-    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> BlockQ4_K {
+impl Distribution<BlockQ4K> for Standard {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> BlockQ4K {
         // TODO: are all bit representations valid?
-        BlockQ4_K {
+        BlockQ4K {
             d: rng.gen(),
             dmin: rng.gen(),
             scales: rng.gen(),
@@ -342,7 +342,7 @@ impl Distribution<BlockQ4_K> for Standard {
     }
 }
 
-impl BlockQ4_K {
+impl BlockQ4K {
     // See https://github.com/ggerganov/ggml/blob/a3c0188a4b5d3dec052ff87c9f773baa53631d70/src/ggml-quants.c#L2548
     pub fn dequantize(self) -> [f32; QK_K] {
         let mut result = [0.0; QK_K];
@@ -390,7 +390,7 @@ fn get_scale_min_k4(j: usize, q: &[u8], d: &mut u8, m: &mut u8) {
 
 // From https://stackoverflow.com/questions/36008434/how-can-i-decode-f16-to-f32-using-only-the-stable-standard-library
 pub fn decode_f16(half: u16) -> f32 {
-    let exp: u16 = half >> 10 & 0x1f;
+    let exp: u16 = (half >> 10) & 0x1f;
     let mant: u16 = half & 0x3ff;
     let val: f32 = if exp == 0 {
         (mant as f32) * (2.0f32).powi(-24)

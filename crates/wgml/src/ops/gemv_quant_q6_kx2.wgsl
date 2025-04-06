@@ -11,7 +11,7 @@ var<uniform> shape_v: Shape::Shape;
 @group(0) @binding(3)
 var<storage, read_write> out: array<vec4<f32>>;
 @group(0) @binding(4)
-var<storage, read> m: array<Quant::BlockQ6_Kx2>;
+var<storage, read> m: array<Quant::BlockQ6Kx2>;
 @group(0) @binding(5)
 var<storage, read> v: array<vec4<f32>>;
 
@@ -100,7 +100,7 @@ fn dequantize_q6_kx2_workgroup(block_id: u32, k: u32) -> array<vec4<f32>, 4> {
     if k / 16u == 0u {
         // Block A
         // Its data goes from data[0] to half of data[52]
-        // It is mostly well aligned with the original BlockQ6_K except for the original value.
+        // It is mostly well aligned with the original BlockQ6K except for the original value.
         let d_a = unpack2x16float((*block).data[52]).x;
 
         const QL0: u32 = 0u;

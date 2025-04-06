@@ -1,12 +1,12 @@
 //! Loading gguf files.
 
 use crate::ops::{
-    GpuBlockQ4_0x2, GpuBlockQ4_1x2, GpuBlockQ4_K, GpuBlockQ5_0x2, GpuBlockQ5_1x2, GpuBlockQ5_K,
-    GpuBlockQ6_Kx2, GpuBlockQ8_0x2, GpuBlockQ8_K, QuantizedValue,
+    GpuBlockQ4K, GpuBlockQ4_0x2, GpuBlockQ4_1x2, GpuBlockQ5K, GpuBlockQ5_0x2, GpuBlockQ5_1x2,
+    GpuBlockQ6Kx2, GpuBlockQ8K, GpuBlockQ8_0x2, QuantizedValue,
 };
 use crate::quantization::{
-    BlockF16, BlockQ4_0, BlockQ4_1, BlockQ4_K, BlockQ5_0, BlockQ5_1, BlockQ5_K, BlockQ6_K,
-    BlockQ8_0, BlockQ8_K,
+    BlockF16, BlockQ4K, BlockQ4_0, BlockQ4_1, BlockQ5K, BlockQ5_0, BlockQ5_1, BlockQ6K, BlockQ8K,
+    BlockQ8_0,
 };
 use crate::quantized_matrix::GpuQuantMatrix;
 use bytemuck::{Pod, PodCastError};
@@ -14,7 +14,6 @@ use log::info;
 use nalgebra::DMatrix;
 use std::collections::HashMap;
 use wgcore::tensor::GpuMatrix;
-use wgpu::BindingType::Buffer;
 use wgpu::{BufferUsages, Device};
 
 const GGUF_FILE_MAGIC_LE: u32 = 0x46554747; // "fugg" (little-endian)
@@ -48,12 +47,12 @@ pub enum GgufTensorData {
     Q5_1(Vec<BlockQ5_1>),
     Q8_0(Vec<BlockQ8_0>),
     Q8_1,
-    Q2_K,
-    Q3_K,
-    Q4_K(Vec<BlockQ4_K>),
-    Q5_K(Vec<BlockQ5_K>),
-    Q6_K(Vec<BlockQ6_K>),
-    Q8_K(Vec<BlockQ8_K>),
+    Q2K,
+    Q3K,
+    Q4K(Vec<BlockQ4K>),
+    Q5K(Vec<BlockQ5K>),
+    Q6K(Vec<BlockQ6K>),
+    Q8K(Vec<BlockQ8K>),
     IQ2_XXS,
     IQ2_XS,
     IQ3_XXS,
@@ -81,12 +80,12 @@ impl GgufTensorData {
             7 => Ok(GgufTensorData::Q5_1(Vec::new())),
             8 => Ok(GgufTensorData::Q8_0(Vec::new())),
             9 => Ok(GgufTensorData::Q8_1),
-            10 => Ok(GgufTensorData::Q2_K),
-            11 => Ok(GgufTensorData::Q3_K),
-            12 => Ok(GgufTensorData::Q4_K(Vec::new())),
-            13 => Ok(GgufTensorData::Q5_K(Vec::new())),
-            14 => Ok(GgufTensorData::Q6_K(Vec::new())),
-            15 => Ok(GgufTensorData::Q8_K(Vec::new())),
+            10 => Ok(GgufTensorData::Q2K),
+            11 => Ok(GgufTensorData::Q3K),
+            12 => Ok(GgufTensorData::Q4K(Vec::new())),
+            13 => Ok(GgufTensorData::Q5K(Vec::new())),
+            14 => Ok(GgufTensorData::Q6K(Vec::new())),
+            15 => Ok(GgufTensorData::Q8K(Vec::new())),
             16 => Ok(GgufTensorData::IQ2_XXS),
             17 => Ok(GgufTensorData::IQ2_XS),
             18 => Ok(GgufTensorData::IQ3_XXS),
@@ -121,10 +120,10 @@ impl GgufTensorData {
             Self::Q5_1(v) => Some(v.iter().flat_map(|v| v.dequantize().into_iter()).collect()),
             Self::Q4_0(v) => Some(v.iter().flat_map(|v| v.dequantize().into_iter()).collect()),
             Self::Q4_1(v) => Some(v.iter().flat_map(|v| v.dequantize().into_iter()).collect()),
-            Self::Q8_K(v) => Some(v.iter().flat_map(|v| v.dequantize().into_iter()).collect()),
-            Self::Q6_K(v) => Some(v.iter().flat_map(|v| v.dequantize().into_iter()).collect()),
-            Self::Q5_K(v) => Some(v.iter().flat_map(|v| v.dequantize().into_iter()).collect()),
-            Self::Q4_K(v) => Some(v.iter().flat_map(|v| v.dequantize().into_iter()).collect()),
+            Self::Q8K(v) => Some(v.iter().flat_map(|v| v.dequantize().into_iter()).collect()),
+            Self::Q6K(v) => Some(v.iter().flat_map(|v| v.dequantize().into_iter()).collect()),
+            Self::Q5K(v) => Some(v.iter().flat_map(|v| v.dequantize().into_iter()).collect()),
+            Self::Q4K(v) => Some(v.iter().flat_map(|v| v.dequantize().into_iter()).collect()),
             _ => None,
         }
     }
@@ -171,10 +170,10 @@ impl GgufTensorData {
                 Q5_1, GpuBlockQ5_1x2;
                 Q4_0, GpuBlockQ4_0x2;
                 Q4_1, GpuBlockQ4_1x2;
-                Q8_K, GpuBlockQ8_K;
-                Q6_K, GpuBlockQ6_Kx2; // This is super slow currently.
-                Q5_K, GpuBlockQ5_K;
-                Q4_K, GpuBlockQ4_K
+                Q8K, GpuBlockQ8K;
+                Q6K, GpuBlockQ6Kx2; // This is super slow currently.
+                Q5K, GpuBlockQ5K;
+                Q4K, GpuBlockQ4K
             );
         }
 
@@ -588,30 +587,30 @@ impl Gguf {
                         &mut tensor_offset,
                     )?;
                 }
-                GgufTensorData::Q8_K(ref mut data) => {
+                GgufTensorData::Q8K(ref mut data) => {
                     *data = read_array_unaligned(
-                        len as usize / BlockQ8_K::DEQUANTIZED_LEN,
+                        len as usize / BlockQ8K::DEQUANTIZED_LEN,
                         bytes,
                         &mut tensor_offset,
                     )?;
                 }
-                GgufTensorData::Q6_K(ref mut data) => {
+                GgufTensorData::Q6K(ref mut data) => {
                     *data = read_array_unaligned(
-                        len as usize / BlockQ6_K::ELEMENTS_PER_BLOCK,
+                        len as usize / BlockQ6K::ELEMENTS_PER_BLOCK,
                         bytes,
                         &mut tensor_offset,
                     )?;
                 }
-                GgufTensorData::Q5_K(ref mut data) => {
+                GgufTensorData::Q5K(ref mut data) => {
                     *data = read_array_unaligned(
-                        len as usize / BlockQ5_K::DEQUANTIZED_LEN,
+                        len as usize / BlockQ5K::DEQUANTIZED_LEN,
                         bytes,
                         &mut tensor_offset,
                     )?;
                 }
-                GgufTensorData::Q4_K(ref mut data) => {
+                GgufTensorData::Q4K(ref mut data) => {
                     *data = read_array_unaligned(
-                        len as usize / BlockQ4_K::DEQUANTIZED_LEN,
+                        len as usize / BlockQ4K::DEQUANTIZED_LEN,
                         bytes,
                         &mut tensor_offset,
                     )?;

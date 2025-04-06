@@ -1,17 +1,17 @@
 use crate::gguf::Gguf;
-use crate::models::llama2::cpu::{Llama2Config, TransformerLayerWeights, TransformerWeights};
+use crate::models::llama2::cpu::Llama2Config;
 use crate::models::llama2::LlamaModelType;
 use crate::ops::{
     BatchedMultiqueryAttention, BatchedMultiqueryAttentionParams, GemvQuant, RmsNorm,
-    RmsNormConfig, RoPE, RoPEConfig, RoPEVariant, Silu, SoftMax,
+    RmsNormConfig, RoPE, RoPEConfig, Silu, SoftMax,
 };
 use crate::quantized_matrix::GpuQuantMatrix;
 use naga_oil::compose::ComposerError;
 use nalgebra::{DMatrix, DVector};
-use wgcore::kernel::KernelInvocationQueue;
+use wgcore::shapes::ViewShapeBuffers;
 use wgcore::tensor::{GpuMatrix, GpuScalar, GpuVector, RowMajor};
 use wgcore::Shader;
-use wgebra::linalg::{Gemv, OpAssign, OpAssignVariant};
+use wgebra::linalg::{OpAssign, OpAssignVariant};
 use wgpu::{BufferUsages, ComputePass, Device, Queue};
 
 pub struct Llama2State {
@@ -46,7 +46,6 @@ pub struct Llama2State {
 
 impl Llama2State {
     pub fn new(device: &Device, config: &Llama2Config) -> Self {
-        let q_head_size = config.dim / config.n_q_heads;
         let kv_dim = (config.dim * config.n_kv_heads) / config.n_q_heads;
         const STORAGE: BufferUsages = BufferUsages::STORAGE;
         const UNIFORM: BufferUsages = BufferUsages::UNIFORM;
@@ -218,7 +217,7 @@ impl Llama2Weights {
 
             layers.push(Llama2LayerWeights {
                 attn_k,
-                attn_norm: GpuVector::init(device, &attn_norm, usage),
+                attn_norm: GpuVector::init(device, attn_norm, usage),
                 attn_q,
                 attn_v,
                 attn_k_bias,
@@ -226,7 +225,7 @@ impl Llama2Weights {
                 attn_v_bias,
                 ffn_down,
                 ffn_gate,
-                ffn_norm: GpuVector::init(device, &ffn_norm, usage),
+                ffn_norm: GpuVector::init(device, ffn_norm, usage),
                 ffn_up,
                 attn_output,
             });
@@ -278,7 +277,7 @@ pub struct Llama2 {
     matmul: GemvQuant,
     soft_max: SoftMax,
     add_assign: OpAssign,
-    copy: OpAssign,
+    // copy: OpAssign,
 }
 
 impl Llama2 {
@@ -292,13 +291,14 @@ impl Llama2 {
             matmul: GemvQuant::from_device(device)?,
             soft_max: SoftMax::from_device(device)?,
             add_assign: OpAssign::new(device, OpAssignVariant::Add)?,
-            copy: OpAssign::new(device, OpAssignVariant::Copy)?,
+            // copy: OpAssign::new(device, OpAssignVariant::Copy)?,
         })
     }
 
     pub fn dispatch<'a>(
         &'a self,
-        queue: &KernelInvocationQueue<'a>,
+        device: &Device,
+        shapes: &ViewShapeBuffers,
         gpu_queue: &Queue,
         pass: &mut ComputePass<'a>,
         state: &Llama2State,
@@ -310,7 +310,8 @@ impl Llama2 {
         for l in 0..config.n_layers {
             let wl = &weights.layers[l];
             self.rms_norm.dispatch(
-                queue,
+                device,
+                shapes,
                 pass,
                 &state.rms_norm_config,
                 &state.xb,
@@ -326,33 +327,36 @@ impl Llama2 {
             let v_cache = state.value_cache[l].column(pos);
 
             if l == 0 {
-                queue.shapes.put_tmp(queue.device(), gpu_queue, k_cache.shape());
-                queue.shapes.put_tmp(queue.device(), gpu_queue, v_cache.shape());
-                queue.shapes.put_tmp(queue.device(), gpu_queue, k_cache.shape().f32_to_vec4::<RowMajor>());
-                queue.shapes.put_tmp(queue.device(), gpu_queue, v_cache.shape().f32_to_vec4::<RowMajor>());
+                shapes.put_tmp(device, gpu_queue, k_cache.shape());
+                shapes.put_tmp(device, gpu_queue, v_cache.shape());
+                shapes.put_tmp(device, gpu_queue, k_cache.shape().f32_to_vec4::<RowMajor>());
+                shapes.put_tmp(device, gpu_queue, v_cache.shape().f32_to_vec4::<RowMajor>());
             }
 
             self.matmul
-                .dispatch(queue, pass, &state.q, &wl.attn_q, &state.xb);
+                .dispatch(device, shapes, pass, &state.q, &wl.attn_q, &state.xb);
             self.matmul
-                .dispatch(queue, pass, k_cache, &wl.attn_k, &state.xb);
+                .dispatch(device, shapes, pass, k_cache, &wl.attn_k, &state.xb);
             self.matmul
-                .dispatch(queue, pass, v_cache, &wl.attn_v, &state.xb);
+                .dispatch(device, shapes, pass, v_cache, &wl.attn_v, &state.xb);
 
             if let Some(q_bias) = &wl.attn_q_bias {
-                self.add_assign.dispatch(queue, pass, &state.q, q_bias);
+                self.add_assign
+                    .dispatch(device, shapes, pass, &state.q, q_bias);
             }
             if let Some(k_bias) = &wl.attn_k_bias {
-                self.add_assign.dispatch(queue, pass, k_cache, k_bias);
+                self.add_assign
+                    .dispatch(device, shapes, pass, k_cache, k_bias);
             }
             if let Some(v_bias) = &wl.attn_v_bias {
-                self.add_assign.dispatch(queue, pass, v_cache, v_bias);
+                self.add_assign
+                    .dispatch(device, shapes, pass, v_cache, v_bias);
             }
-
 
             let rope_variant = self.model_type.rope_variant();
             self.rope.dispatch(
-                queue,
+                device,
+                shapes,
                 pass,
                 rope_variant,
                 &state.rope_config,
@@ -361,16 +365,26 @@ impl Llama2 {
             );
 
             // Start attention.
-            self.dispatch_attn(queue, gpu_queue, pass, state, weights, config, l, attn_params, pos);
-
+            self.dispatch_attn(
+                device,
+                shapes,
+                gpu_queue,
+                pass,
+                state,
+                config,
+                l,
+                attn_params,
+            );
 
             self.matmul
-                .dispatch(queue, pass, &state.xb2, &wl.attn_output, &state.xb);
+                .dispatch(device, shapes, pass, &state.xb2, &wl.attn_output, &state.xb);
             // End attention.
 
-            self.add_assign.dispatch(queue, pass, &state.x, &state.xb2);
+            self.add_assign
+                .dispatch(device, shapes, pass, &state.x, &state.xb2);
             self.rms_norm.dispatch(
-                queue,
+                device,
+                shapes,
                 pass,
                 &state.rms_norm_config,
                 &state.xb,
@@ -380,19 +394,22 @@ impl Llama2 {
 
             // Start ffn_silu
             self.matmul
-                .dispatch(queue, pass, &state.hb, &wl.ffn_gate, &state.xb);
+                .dispatch(device, shapes, pass, &state.hb, &wl.ffn_gate, &state.xb);
             self.matmul
-                .dispatch(queue, pass, &state.hb2, &wl.ffn_up, &state.xb);
-            self.silu.dispatch(queue, pass, &state.hb, &state.hb2);
+                .dispatch(device, shapes, pass, &state.hb2, &wl.ffn_up, &state.xb);
+            self.silu
+                .dispatch(device, shapes, pass, &state.hb, &state.hb2);
             self.matmul
-                .dispatch(queue, pass, &state.xb2, &wl.ffn_down, &state.hb);
+                .dispatch(device, shapes, pass, &state.xb2, &wl.ffn_down, &state.hb);
             // End ffn_silu
 
-            self.add_assign.dispatch(queue, pass, &state.x, &state.xb2);
+            self.add_assign
+                .dispatch(device, shapes, pass, &state.x, &state.xb2);
         }
 
         self.rms_norm.dispatch(
-            queue,
+            device,
+            shapes,
             pass,
             &state.rms_norm_config,
             &state.xb,
@@ -400,35 +417,41 @@ impl Llama2 {
             &weights.output_norm,
         );
 
-        self.matmul
-            .dispatch(queue, pass, &state.logits, &weights.output, &state.xb);
+        self.matmul.dispatch(
+            device,
+            shapes,
+            pass,
+            &state.logits,
+            &weights.output,
+            &state.xb,
+        );
 
         // // PERF: Softwax the logits so we don’t have to do it on the cpu side in the sampler?
-        // self.soft_max.dispatch(queue, pass, &state.logits);
+        // self.soft_max.dispatch(device, shapes, pass, &state.logits);
     }
 
-    fn dispatch_attn<'a>(
-        &'a self,
-        queue: &KernelInvocationQueue<'a>,
+    fn dispatch_attn(
+        &self,
+        device: &Device,
+        shapes: &ViewShapeBuffers,
         gpu_queue: &Queue,
         pass: &mut ComputePass,
         state: &Llama2State,
-        weights: &Llama2Weights,
         config: &Llama2Config,
         layer: usize,
         attn_params: &BatchedMultiqueryAttentionParams,
-        pos: u32,
     ) {
         const USE_MATMUL_ATTN: bool = true;
 
         if USE_MATMUL_ATTN {
             self.attn.dispatch_multi(
-                queue,
+                device,
+                shapes,
                 gpu_queue,
                 pass,
                 &self.matmul.gemv_f32,
                 &self.soft_max,
-                &attn_params,
+                attn_params,
                 &state.attn_params,
                 &state.q,
                 &state.key_cache[layer],
@@ -438,7 +461,7 @@ impl Llama2 {
             );
         } else {
             self.attn.dispatch(
-                queue,
+                device,
                 pass,
                 config.n_q_heads as u32,
                 &state.attn_params,

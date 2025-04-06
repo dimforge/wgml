@@ -9,9 +9,10 @@ use nalgebra::{DMatrix, DVector};
 use rand::SeedableRng;
 use std::hint::black_box;
 use wgcore::gpu::GpuInstance;
-use wgcore::kernel::{CommandEncoderExt, KernelInvocationQueue};
-use wgcore::re_exports::{bytemuck, wgpu};
+use wgcore::kernel::CommandEncoderExt;
 use wgcore::re_exports::Device;
+use wgcore::re_exports::{bytemuck, wgpu};
+use wgcore::shapes::ViewShapeBuffers;
 use wgml::gguf::Gguf;
 use wgml::models::llama2::cpu::Llama2Config;
 use wgml::models::llama2::{Llama2, Llama2State, Llama2Weights, LlamaModelType, LlamaTokenizer};
@@ -24,6 +25,7 @@ pub struct ChatLlama2 {
     tokenizer: AnyTokenizer,
     config: Llama2Config,
     state: Llama2State,
+    shapes: ViewShapeBuffers,
 }
 
 impl ChatLlama2 {
@@ -48,6 +50,7 @@ impl ChatLlama2 {
             tokenizer,
             config,
             state,
+            shapes: ViewShapeBuffers::new(),
         })
     }
 
@@ -98,7 +101,6 @@ impl ChatLlama2 {
         let mut token = prompt_toks[start_pos];
         let mut start = None;
         let mut logits = DVector::zeros(self.config.vocab_size);
-        let queue = KernelInvocationQueue::new(gpu.device());
 
         for pos in start_pos.. {
             if pos == start_pos + timing_delay {
@@ -106,7 +108,7 @@ impl ChatLlama2 {
             }
 
             // let t0 = std::time::Instant::now();
-            self.forward_logits(gpu, &queue, pos as u32, token as u32, &mut logits)
+            self.forward_logits(gpu, &self.shapes, pos as u32, token as u32, &mut logits)
                 .await;
             // let elapsed = t0.elapsed().as_secs_f64();
             // println!("Logits time: {} (= {:.3} tok/s)", elapsed, 1.0 / elapsed);
@@ -128,8 +130,7 @@ impl ChatLlama2 {
                     break;
                 } else {
                     let tok_per_second = if let Some(start) = &start {
-                        (pos - start_pos - timing_delay) as f64
-                            / start.elapsed().as_secs_f64()
+                        (pos - start_pos - timing_delay) as f64 / start.elapsed().as_secs_f64()
                     } else {
                         0.0
                     };
@@ -153,12 +154,12 @@ impl ChatLlama2 {
     async fn forward_logits<'a>(
         &self,
         gpu: &GpuInstance,
-        queue: &KernelInvocationQueue<'a>,
+        shapes: &ViewShapeBuffers,
         pos: u32,
         token: u32,
         out: &mut DVector<f32>,
     ) {
-        queue.shapes.clear_tmp();
+        shapes.clear_tmp();
 
         let (rope_config, rms_norm_config, attn_params) = self.config.derived_configs(pos);
 
@@ -187,7 +188,8 @@ impl ChatLlama2 {
         // let t0 = std::time::Instant::now();
         let mut compute_pass = encoder.compute_pass("transformer", None);
         self.transformer.dispatch(
-            queue,
+            gpu.device(),
+            shapes,
             gpu.queue(),
             &mut compute_pass,
             &self.state,

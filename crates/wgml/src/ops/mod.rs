@@ -14,8 +14,8 @@ pub use batched_multiquery_attention::{
     BatchedMultiqueryAttention, BatchedMultiqueryAttentionParams,
 };
 pub use gemv_quant::{
-    GemvQuant, GpuBlockQ4_0x2, GpuBlockQ4_1x2, GpuBlockQ4_K, GpuBlockQ5_0x2, GpuBlockQ5_1x2,
-    GpuBlockQ5_K, GpuBlockQ6_Kx2, GpuBlockQ8_0x2, GpuBlockQ8_K, QuantizedValue,
+    GemvQuant, GpuBlockQ4K, GpuBlockQ4_0x2, GpuBlockQ4_1x2, GpuBlockQ5K, GpuBlockQ5_0x2,
+    GpuBlockQ5_1x2, GpuBlockQ6Kx2, GpuBlockQ8K, GpuBlockQ8_0x2, QuantizedValue,
 };
 pub use layernorm::LayerNorm;
 pub use quantization::Quantization;

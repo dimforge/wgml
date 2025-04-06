@@ -278,7 +278,7 @@ fn dequantize_q5_1x2(q: BlockQ5_1x2) -> array<vec4<f32>, 16> {
 }
 
 // See https://github.com/ggerganov/ggml/blob/fca1caafea7de9fbd7efc733b9818f9cf2da3050/src/ggml-quants.h#L161-L165
-struct BlockQ8_K {
+struct BlockQ8K {
     /// Delta
     d: f32,
     /// Quants
@@ -287,7 +287,7 @@ struct BlockQ8_K {
     bsums: array<u32, 8> // [i16; 256 / 16]
 }
 
-fn dequantize_q8_k(block: BlockQ8_K) -> array<vec4<f32>, 64> {
+fn dequantize_q8_k(block: BlockQ8K) -> array<vec4<f32>, 64> {
     var result = array<vec4<f32>, 64>();
 
     for (var j = 0; j < 64; j++) {
@@ -300,18 +300,18 @@ fn dequantize_q8_k(block: BlockQ8_K) -> array<vec4<f32>, 64> {
     return result;
 }
 
-struct BlockQ6_Kx2 {
+struct BlockQ6Kx2 {
     data: array<u32, 105>
 }
 
 // NOTE: this one is a bit more complicated than the other K quantizations
 //       because of the nonoptimal alignment of both blocks.
-fn dequantize_q6_kx2_ref(block: BlockQ6_Kx2) -> array<vec4<f32>, 128> {
+fn dequantize_q6_kx2_ref(block: BlockQ6Kx2) -> array<vec4<f32>, 128> {
     var result = array<vec4<f32>, 128>();
 
     // Block A
     // Its data goes from data[0] to half of data[52]
-    // It is mostly well aligned with the original BlockQ6_K except for the original value.
+    // It is mostly well aligned with the original BlockQ6K except for the original value.
     let d_a = unpack2x16float(block.data[52]).x;
 
     const _0xF = vec4(0xFu);
@@ -400,7 +400,7 @@ fn dequantize_q6_kx2_ref(block: BlockQ6_Kx2) -> array<vec4<f32>, 128> {
 // NOTE: this is the same as dequantize_q6_k_ref, bet rearranged to
 //       facilitate its integration into gemv where multiple workgroup
 //       threads work on the same quantized block.
-fn dequantize_q6_kx2(block: BlockQ6_Kx2) -> array<vec4<f32>, 128> {
+fn dequantize_q6_kx2(block: BlockQ6Kx2) -> array<vec4<f32>, 128> {
     var result = array<vec4<f32>, 128>();
 
     for (var k = 0u; k < 32; k++) {
@@ -416,7 +416,7 @@ fn dequantize_q6_kx2(block: BlockQ6_Kx2) -> array<vec4<f32>, 128> {
 }
 
 
-fn dequantize_q6_kx2_workgroup(block: BlockQ6_Kx2, k: u32) -> array<vec4<f32>, 4> {
+fn dequantize_q6_kx2_workgroup(block: BlockQ6Kx2, k: u32) -> array<vec4<f32>, 4> {
     const _0xF = vec4(0xFu);
     const _6 = vec4(6u);
     const _4 = vec4(4u);
@@ -427,7 +427,7 @@ fn dequantize_q6_kx2_workgroup(block: BlockQ6_Kx2, k: u32) -> array<vec4<f32>, 4
     if k / 16u == 0u {
         // Block A
         // Its data goes from data[0] to half of data[52]
-        // It is mostly well aligned with the original BlockQ6_K except for the original value.
+        // It is mostly well aligned with the original BlockQ6K except for the original value.
         let d_a = unpack2x16float(block.data[52]).x;
 
         const QL0: u32 = 0u;
@@ -507,14 +507,14 @@ fn dequantize_q6_kx2_workgroup(block: BlockQ6_Kx2, k: u32) -> array<vec4<f32>, 4
 
 
 // See https://github.com/ggerganov/ggml/blob/fca1caafea7de9fbd7efc733b9818f9cf2da3050/src/ggml-quants.h#L130-L135
-struct BlockQ5_K {
+struct BlockQ5K {
     d_dmin: u32,           // (u16, u16) = super-block scale, super-block scale for quantized mins
     scales: array<u32, 3>, // [u8; 12] = scales and mins, quantized with 6 bits
     qh: array<u32, 8>,     // [u8; 256 / 8] = quants, high bit
     qs: array<u32, 32>,    // [u8; 256 / 2] = quants, low 4 bits
 }
 
-fn dequantize_q5_k_ref(block: BlockQ5_K) -> array<vec4<f32>, 64> {
+fn dequantize_q5_k_ref(block: BlockQ5K) -> array<vec4<f32>, 64> {
     var result = array<vec4<f32>, 64>();
 
     let d_dmin = unpack2x16float(block.d_dmin);
@@ -568,7 +568,7 @@ fn dequantize_q5_k_ref(block: BlockQ5_K) -> array<vec4<f32>, 64> {
 // NOTE: this is the same as dequantize_q5_k_ref, bet rearranged to
 //       facilitate its integration into gemv where multiple workgroup
 //       threads work on the same quantized block.
-fn dequantize_q5_k(block: BlockQ5_K) -> array<vec4<f32>, 64> {
+fn dequantize_q5_k(block: BlockQ5K) -> array<vec4<f32>, 64> {
     var result = array<vec4<f32>, 64>();
 
     for (var k = 0u; k < 32; k++) {
@@ -581,7 +581,7 @@ fn dequantize_q5_k(block: BlockQ5_K) -> array<vec4<f32>, 64> {
     return result;
 }
 
-fn dequantize_q5_k_workgroup(block: BlockQ5_K, k: u32) -> array<vec4<f32>, 2> {
+fn dequantize_q5_k_workgroup(block: BlockQ5K, k: u32) -> array<vec4<f32>, 2> {
     let d_dmin = unpack2x16float(block.d_dmin);
     let d = d_dmin.x;
     let min = d_dmin.y;
@@ -627,14 +627,14 @@ fn dequantize_q5_k_workgroup(block: BlockQ5_K, k: u32) -> array<vec4<f32>, 2> {
 }
 
 // See https://github.com/ggerganov/ggml/blob/fca1caafea7de9fbd7efc733b9818f9cf2da3050/src/ggml-quants.h#L109-L113
-struct BlockQ4_K {
+struct BlockQ4K {
     d_dmin: u32,           // (u16, u16) = super-block scale, super-block scale for quantized mins
     scales: array<u32, 3>, // [u8; 12] = scales and mins, quantized with 6 bits
     qs: array<u32, 32>,    // [u8; 256 / 2] = 4-bit quants
 }
 
 
-fn dequantize_q4_k_ref(block: BlockQ4_K) -> array<vec4<f32>, 64> {
+fn dequantize_q4_k_ref(block: BlockQ4K) -> array<vec4<f32>, 64> {
     var result = array<vec4<f32>, 64>();
 
     let d_dmin = unpack2x16float(block.d_dmin);
@@ -686,7 +686,7 @@ fn dequantize_q4_k_ref(block: BlockQ4_K) -> array<vec4<f32>, 64> {
 // NOTE: this is the same as dequantize_q4_k_ref, bet rearranged to
 //       facilitate its integration into gemv where multiple workgroup
 //       threads work on the same quantized block.
-fn dequantize_q4_k(block: BlockQ4_K) -> array<vec4<f32>, 64> {
+fn dequantize_q4_k(block: BlockQ4K) -> array<vec4<f32>, 64> {
     var result = array<vec4<f32>, 64>();
 
     for (var k = 0u; k < 32; k++) {
@@ -703,7 +703,7 @@ fn dequantize_q4_k(block: BlockQ4_K) -> array<vec4<f32>, 64> {
 //       `block` argument replaced by an index to a storage buffer.
 //       Any change here should be applied to that other file so it can
 //       benefit from the improvements.
-fn dequantize_q4_k_workgroup(block: BlockQ4_K, k: u32) -> array<vec4<f32>, 2> {
+fn dequantize_q4_k_workgroup(block: BlockQ4K, k: u32) -> array<vec4<f32>, 2> {
     let d_dmin = unpack2x16float(block.d_dmin);
     let d = d_dmin.x;
     let min = d_dmin.y;

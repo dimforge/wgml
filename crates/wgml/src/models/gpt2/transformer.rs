@@ -1,12 +1,11 @@
 use crate::gguf::Gguf;
 use crate::models::gpt2::cpu::{Gpt2Model, Gpt2Params};
 use crate::ops::{
-    BatchedMultiqueryAttention, BatchedMultiqueryAttentionParams, LayerNorm, Unary, UnaryInplace,
-    UnaryOp,
+    BatchedMultiqueryAttention, BatchedMultiqueryAttentionParams, LayerNorm, UnaryInplace, UnaryOp,
 };
 use naga_oil::compose::ComposerError;
 use nalgebra::{DMatrix, DVector};
-use wgcore::kernel::KernelInvocationQueue;
+use wgcore::shapes::ViewShapeBuffers;
 use wgcore::tensor::{GpuMatrix, GpuScalar, GpuVector};
 use wgcore::Shader;
 use wgebra::linalg::{Gemv, OpAssign, OpAssignVariant};
@@ -263,9 +262,10 @@ impl Gpt2 {
         })
     }
 
-    pub fn dispatch<'a>(
-        &'a self,
-        queue: &mut KernelInvocationQueue<'a>,
+    pub fn dispatch(
+        &self,
+        device: &Device,
+        shapes: &ViewShapeBuffers,
         pass: &mut ComputePass,
         state: &Gpt2State,
         weights: &Gpt2Weights,
@@ -274,33 +274,51 @@ impl Gpt2 {
         pos: u32,
     ) {
         // Positional encoding.
-        self.copy_from
-            .dispatch(queue, pass, &state.layer_input, weights.wte.column(embd));
-        self.add_assign
-            .dispatch(queue, pass, &state.layer_input, weights.wpe.column(pos));
+        self.copy_from.dispatch(
+            device,
+            shapes,
+            pass,
+            &state.layer_input,
+            weights.wte.column(embd),
+        );
+        self.add_assign.dispatch(
+            device,
+            shapes,
+            pass,
+            &state.layer_input,
+            weights.wpe.column(pos),
+        );
 
         for layer in &weights.layers {
             // Layer norm.
             {
                 self.layernorm
-                    .dispatch(queue, pass, &state.curr_768, &state.layer_input);
+                    .dispatch(device, shapes, pass, &state.curr_768, &state.layer_input);
 
                 // cur = ln_1_g*cur + ln_1_b
-                self.mul_assign.dispatch(queue, pass, &state.curr_768, &layer.ln_1_g);
-                self.add_assign.dispatch(queue, pass, &state.curr_768, &layer.ln_1_b);
+                self.mul_assign
+                    .dispatch(device, shapes, pass, &state.curr_768, &layer.ln_1_g);
+                self.add_assign
+                    .dispatch(device, shapes, pass, &state.curr_768, &layer.ln_1_b);
             }
 
             // attn
             {
                 self.matmul.dispatch(
-                    queue,
+                    device,
+                    shapes,
                     pass,
                     &state.curr_2304,
                     &layer.c_attn_attn_w,
                     &state.curr_768,
                 );
-                self.add_assign
-                    .dispatch(queue, pass, &state.curr_2304, &layer.c_attn_attn_b);
+                self.add_assign.dispatch(
+                    device,
+                    shapes,
+                    pass,
+                    &state.curr_2304,
+                    &layer.c_attn_attn_b,
+                );
             }
 
             // self-attention
@@ -309,13 +327,15 @@ impl Gpt2 {
                 let v_cache = layer.value_cache.column(pos);
 
                 self.copy_from.dispatch(
-                    queue,
+                    device,
+                    shapes,
                     pass,
                     &state.memory_q,
                     state.curr_2304.rows(0, config.n_embd as u32),
                 );
                 self.copy_from.dispatch(
-                    queue,
+                    device,
+                    shapes,
                     pass,
                     k_cache,
                     state
@@ -323,7 +343,8 @@ impl Gpt2 {
                         .rows(config.n_embd as u32, config.n_embd as u32),
                 );
                 self.copy_from.dispatch(
-                    queue,
+                    device,
+                    shapes,
                     pass,
                     v_cache,
                     state
@@ -333,7 +354,7 @@ impl Gpt2 {
 
                 // attention.
                 self.attn.dispatch(
-                    queue,
+                    device,
                     pass,
                     config.n_head as u32,
                     &state.attn_params,
@@ -349,77 +370,109 @@ impl Gpt2 {
             // cur = proj_w*cur + proj_b
             {
                 self.matmul.dispatch(
-                    queue,
+                    device,
+                    shapes,
                     pass,
                     &state.curr_768_b,
                     &layer.c_attn_proj_w,
                     &state.curr_768,
                 );
-                self.add_assign
-                    .dispatch(queue, pass, &state.curr_768_b, &layer.c_attn_proj_b);
+                self.add_assign.dispatch(
+                    device,
+                    shapes,
+                    pass,
+                    &state.curr_768_b,
+                    &layer.c_attn_proj_b,
+                );
             }
 
             // add the input
             self.add_assign
-                .dispatch(queue, pass, &state.curr_768_b, &state.layer_input);
+                .dispatch(device, shapes, pass, &state.curr_768_b, &state.layer_input);
 
             // prep input for next layer
             self.copy_from
-                .dispatch(queue, pass, &state.layer_input, &state.curr_768_b);
+                .dispatch(device, shapes, pass, &state.layer_input, &state.curr_768_b);
 
             // feed-forward network
             {
                 // norm
                 {
-                    self.layernorm
-                        .dispatch(queue, pass, &state.curr_768, &state.curr_768_b);
+                    self.layernorm.dispatch(
+                        device,
+                        shapes,
+                        pass,
+                        &state.curr_768,
+                        &state.curr_768_b,
+                    );
 
                     // cur = ln_2_g*cur + ln_2_b
-                    self.mul_assign.dispatch(queue, pass, &state.curr_768, &layer.ln_2_g);
-                    self.add_assign.dispatch(queue, pass, &state.curr_768, &layer.ln_2_b);
+                    self.mul_assign
+                        .dispatch(device, shapes, pass, &state.curr_768, &layer.ln_2_g);
+                    self.add_assign
+                        .dispatch(device, shapes, pass, &state.curr_768, &layer.ln_2_b);
                 }
 
                 // fully connected
-                self.matmul
-                    .dispatch(queue, pass, &state.curr_3072, &layer.c_mlp_fc_w, &state.curr_768);
+                self.matmul.dispatch(
+                    device,
+                    shapes,
+                    pass,
+                    &state.curr_3072,
+                    &layer.c_mlp_fc_w,
+                    &state.curr_768,
+                );
                 self.add_assign
-                    .dispatch(queue, pass, &state.curr_3072, &layer.c_mlp_fc_b);
+                    .dispatch(device, shapes, pass, &state.curr_3072, &layer.c_mlp_fc_b);
 
                 // GELU activation
-                self.gelu.dispatch(queue, pass, &state.curr_3072, None);
+                self.gelu
+                    .dispatch(device, shapes, pass, &state.curr_3072, None);
 
                 // projection
                 self.matmul.dispatch(
-                    queue,
+                    device,
+                    shapes,
                     pass,
                     &state.curr_768,
                     &layer.c_mlp_proj_w,
                     &state.curr_3072,
                 );
-                self.add_assign
-                    .dispatch(queue, pass, &state.curr_768, &layer.c_mlp_proj_b);
+                self.add_assign.dispatch(
+                    device,
+                    shapes,
+                    pass,
+                    &state.curr_768,
+                    &layer.c_mlp_proj_b,
+                );
             }
 
             // finalize input for next layer
             self.add_assign
-                .dispatch(queue, pass, &state.layer_input, &state.curr_768);
+                .dispatch(device, shapes, pass, &state.layer_input, &state.curr_768);
         }
 
         // norm
         {
             self.layernorm
-                .dispatch(queue, pass, &state.curr_768, &state.layer_input);
+                .dispatch(device, shapes, pass, &state.curr_768, &state.layer_input);
 
             // inpL = ln_f_g*inpL + ln_f_b
             self.mul_assign
-                .dispatch(queue, pass, &state.curr_768, &weights.ln_f_g);
+                .dispatch(device, shapes, pass, &state.curr_768, &weights.ln_f_g);
             self.add_assign
-                .dispatch(queue, pass, &state.curr_768, &weights.ln_f_b);
+                .dispatch(device, shapes, pass, &state.curr_768, &weights.ln_f_b);
         }
 
         // inpL = WTE * inpL
 
-        self.matmul
-            .dispatch(queue, pass, &state.curr_vocab, &weights.lm_head, &state.curr_768);
+        self.matmul.dispatch(
+            device,
+            shapes,
+            pass,
+            &state.curr_vocab,
+            &weights.lm_head,
+            &state.curr_768,
+        );
     }
 }

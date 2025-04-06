@@ -1,17 +1,16 @@
 use super::Quantization;
-use crate::quantization::{BlockQ4_K, BlockQ5_K, BlockQ8_K};
+use crate::quantization::{BlockQ4K, BlockQ5K, BlockQ8K};
 use crate::quantized_matrix::GpuQuantMatrix;
-use bytemuck::Pod;
-use naga_oil::compose::{ComposerError, ShaderDefValue};
+use naga_oil::compose::ComposerError;
 use rand::distributions::{Distribution, Standard};
 use rand::Rng;
-use std::collections::HashMap;
-use wgcore::kernel::{KernelDispatch, KernelInvocationBuilder, KernelInvocationQueue};
-use wgcore::tensor::{GpuMatrixView, GpuVectorView, RowMajor};
+use wgcore::kernel::KernelDispatch;
+use wgcore::shapes::ViewShapeBuffers;
+use wgcore::tensor::{GpuVectorView, RowMajor};
 use wgcore::Shader;
 use wgebra::linalg::{row_major_shader_defs, Shape};
 use wgebra::Gemv;
-use wgpu::{ComputePass, ComputePipeline};
+use wgpu::{ComputePass, ComputePipeline, Device};
 
 const USE_OPTIMIZED: bool = true;
 
@@ -64,29 +63,29 @@ impl QuantizedValue for GpuBlockQ5_1x2 {
     const DEQUANTIZED_LEN: usize = 64;
 }
 
-pub type GpuBlockQ8_K = BlockQ8_K;
-pub type GpuBlockQ5_K = BlockQ5_K;
-pub type GpuBlockQ4_K = BlockQ4_K;
+pub type GpuBlockQ8K = BlockQ8K;
+pub type GpuBlockQ5K = BlockQ5K;
+pub type GpuBlockQ4K = BlockQ4K;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(C)]
-pub struct GpuBlockQ6_Kx2([u32; 105]);
+pub struct GpuBlockQ6Kx2([u32; 105]);
 
-impl QuantizedValue for GpuBlockQ6_Kx2 {
+impl QuantizedValue for GpuBlockQ6Kx2 {
     const DEQUANTIZED_LEN: usize = 512;
 }
 
 // SAFETY: These impls are safe, they don’t exist in bytemuck because they don’t
 // provide impls for non-power-of-two largeish arrays.
-unsafe impl bytemuck::Zeroable for GpuBlockQ6_Kx2 {}
-unsafe impl bytemuck::Pod for GpuBlockQ6_Kx2 {}
+unsafe impl bytemuck::Zeroable for GpuBlockQ6Kx2 {}
+unsafe impl bytemuck::Pod for GpuBlockQ6Kx2 {}
 
 macro_rules! impl_rand {
     ($($t: ident, $len: literal);*) => {$(
         impl Distribution<$t> for Standard {
             fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> $t {
                 // TODO: are all bit representations valid?
-                $t([0; $len].map(|_| 0)) // rng.gen()))
+                $t([0; $len].map(|_| rng.gen()))
             }
         }
     )*};
@@ -98,7 +97,7 @@ impl_rand!(
     GpuBlockQ4_1x2, 10;
     GpuBlockQ5_0x2, 11;
     GpuBlockQ5_1x2, 12;
-    GpuBlockQ6_Kx2, 105
+    GpuBlockQ6Kx2, 105
 );
 
 pub struct GemvQuant {
@@ -108,10 +107,10 @@ pub struct GemvQuant {
     pub gemv_q4: GemvQ4_0x2,
     pub gemv_q5_1: GemvQ5_1x2,
     pub gemv_q4_1: GemvQ4_1x2,
-    pub gemv_q8_k: GemvQ8_K,
-    pub gemv_q6_k: GemvQ6_Kx2,
-    pub gemv_q5_k: GemvQ5_K,
-    pub gemv_q4_k: GemvQ4_K,
+    pub gemv_q8_k: GemvQ8K,
+    pub gemv_q6_k: GemvQ6Kx2,
+    pub gemv_q5_k: GemvQ5K,
+    pub gemv_q4_k: GemvQ4K,
 }
 
 impl GemvQuant {
@@ -123,10 +122,10 @@ impl GemvQuant {
             gemv_q5_1: GemvQ5_1x2::from_device(device)?,
             gemv_q4: GemvQ4_0x2::from_device(device)?,
             gemv_q4_1: GemvQ4_1x2::from_device(device)?,
-            gemv_q8_k: GemvQ8_K::from_device(device)?,
-            gemv_q6_k: GemvQ6_Kx2::from_device(device)?,
-            gemv_q5_k: GemvQ5_K::from_device(device)?,
-            gemv_q4_k: GemvQ4_K::from_device(device)?,
+            gemv_q8_k: GemvQ8K::from_device(device)?,
+            gemv_q6_k: GemvQ6Kx2::from_device(device)?,
+            gemv_q5_k: GemvQ5K::from_device(device)?,
+            gemv_q4_k: GemvQ4K::from_device(device)?,
         })
     }
 }
@@ -199,7 +198,7 @@ pub struct GemvQ4_1x2 {
     composable = false
 )]
 /// Shader for computing the product of a matrix and a vector.
-pub struct GemvQ8_K {
+pub struct GemvQ8K {
     pub gemv: ComputePipeline,
 }
 
@@ -211,7 +210,7 @@ pub struct GemvQ8_K {
     composable = false
 )]
 /// Shader for computing the product of a matrix and a vector.
-pub struct GemvQ6_Kx2 {
+pub struct GemvQ6Kx2 {
     pub gemv: ComputePipeline,
 }
 
@@ -223,7 +222,7 @@ pub struct GemvQ6_Kx2 {
     composable = false
 )]
 /// Shader for computing the product of a matrix and a vector.
-pub struct GemvQ5_K {
+pub struct GemvQ5K {
     pub gemv: ComputePipeline,
 }
 
@@ -235,7 +234,7 @@ pub struct GemvQ5_K {
     composable = false
 )]
 /// Shader for computing the product of a matrix and a vector.
-pub struct GemvQ4_K {
+pub struct GemvQ4K {
     pub gemv: ComputePipeline,
 }
 
@@ -243,7 +242,8 @@ impl GemvQuant {
     /// Queues this shader to compute `out = m * v`.
     pub fn dispatch<'a, 'b>(
         &'a self,
-        queue: &KernelInvocationQueue<'a>,
+        device: &Device,
+        shapes: &ViewShapeBuffers,
         pass: &mut ComputePass,
         out: impl Into<GpuVectorView<'b, f32>>,
         m: &GpuQuantMatrix,
@@ -273,10 +273,10 @@ impl GemvQuant {
             GpuQuantMatrix::Q5_1(_) => v.shape().f32_to_vec4::<RowMajor>(),
             GpuQuantMatrix::Q4_0(_) => v.shape().f32_to_vec4::<RowMajor>(),
             GpuQuantMatrix::Q4_1(_) => v.shape().f32_to_vec4::<RowMajor>(),
-            GpuQuantMatrix::Q8_K(_) => v.shape().f32_to_vec4::<RowMajor>(),
-            GpuQuantMatrix::Q6_K(_) => v.shape().f32_to_vec4::<RowMajor>(),
-            GpuQuantMatrix::Q5_K(_) => v.shape().f32_to_vec4::<RowMajor>(),
-            GpuQuantMatrix::Q4_K(_) => v.shape().f32_to_vec4::<RowMajor>(),
+            GpuQuantMatrix::Q8K(_) => v.shape().f32_to_vec4::<RowMajor>(),
+            GpuQuantMatrix::Q6K(_) => v.shape().f32_to_vec4::<RowMajor>(),
+            GpuQuantMatrix::Q5K(_) => v.shape().f32_to_vec4::<RowMajor>(),
+            GpuQuantMatrix::Q4K(_) => v.shape().f32_to_vec4::<RowMajor>(),
         };
 
         let optimized_shape = if USE_OPTIMIZED {
@@ -291,15 +291,15 @@ impl GemvQuant {
             GpuQuantMatrix::Q5_1(_) => out.shape(),
             GpuQuantMatrix::Q4_0(_) => optimized_shape,
             GpuQuantMatrix::Q4_1(_) => out.shape(),
-            GpuQuantMatrix::Q8_K(_) => out.shape(),
-            GpuQuantMatrix::Q6_K(_) => optimized_shape,
-            GpuQuantMatrix::Q5_K(_) => optimized_shape,
-            GpuQuantMatrix::Q4_K(_) => optimized_shape,
+            GpuQuantMatrix::Q8K(_) => out.shape(),
+            GpuQuantMatrix::Q6K(_) => optimized_shape,
+            GpuQuantMatrix::Q5K(_) => optimized_shape,
+            GpuQuantMatrix::Q4K(_) => optimized_shape,
         };
 
-        let out_shape_buf = queue.shape_buffer(out_shape);
-        let v_shape_buf = queue.shape_buffer(v_shape);
-        let m_shape_buf = queue.shape_buffer(m.shape());
+        let out_shape_buf = shapes.get(device, out_shape);
+        let v_shape_buf = shapes.get(device, v_shape);
+        let m_shape_buf = shapes.get(device, m.shape());
 
         let kernel = match m {
             GpuQuantMatrix::F32(_) => &self.gemv_f32.gemv,
@@ -308,10 +308,10 @@ impl GemvQuant {
             GpuQuantMatrix::Q5_1(_) => &self.gemv_q5_1.gemv,
             GpuQuantMatrix::Q4_0(_) => &self.gemv_q4.gemv,
             GpuQuantMatrix::Q4_1(_) => &self.gemv_q4_1.gemv,
-            GpuQuantMatrix::Q8_K(_) => &self.gemv_q8_k.gemv,
-            GpuQuantMatrix::Q6_K(_) => &self.gemv_q6_k.gemv,
-            GpuQuantMatrix::Q5_K(_) => &self.gemv_q5_k.gemv,
-            GpuQuantMatrix::Q4_K(_) => &self.gemv_q4_k.gemv,
+            GpuQuantMatrix::Q8K(_) => &self.gemv_q8_k.gemv,
+            GpuQuantMatrix::Q6K(_) => &self.gemv_q6_k.gemv,
+            GpuQuantMatrix::Q5K(_) => &self.gemv_q5_k.gemv,
+            GpuQuantMatrix::Q4K(_) => &self.gemv_q4_k.gemv,
         };
 
         let optimized_dispatch = if USE_OPTIMIZED {
@@ -328,13 +328,13 @@ impl GemvQuant {
             GpuQuantMatrix::Q5_1(_) => m.shape().size[0].div_ceil(64),
             GpuQuantMatrix::Q4_0(_) => optimized_dispatch,
             GpuQuantMatrix::Q4_1(_) => m.shape().size[0].div_ceil(64),
-            GpuQuantMatrix::Q8_K(_) => m.shape().size[0].div_ceil(64),
-            GpuQuantMatrix::Q6_K(_) => optimized_dispatch,
-            GpuQuantMatrix::Q5_K(_) => optimized_dispatch,
-            GpuQuantMatrix::Q4_K(_) => optimized_dispatch,
+            GpuQuantMatrix::Q8K(_) => m.shape().size[0].div_ceil(64),
+            GpuQuantMatrix::Q6K(_) => optimized_dispatch,
+            GpuQuantMatrix::Q5K(_) => optimized_dispatch,
+            GpuQuantMatrix::Q4K(_) => optimized_dispatch,
         };
 
-        KernelDispatch::new(queue.device(), pass, &kernel)
+        KernelDispatch::new(device, pass, kernel)
             .bind0([
                 &out_shape_buf,
                 &m_shape_buf,
@@ -347,4 +347,4 @@ impl GemvQuant {
     }
 }
 
-wgcore::test_shader_compilation!(GemvQ4_K);
+wgcore::test_shader_compilation!(GemvQ4K);

@@ -4,9 +4,10 @@ use crate::sampler::{sample_next_token, SamplerParams};
 use async_channel::Sender;
 use nalgebra::DVector;
 use wgcore::gpu::GpuInstance;
-use wgcore::kernel::{CommandEncoderExt, KernelInvocationQueue};
+use wgcore::kernel::CommandEncoderExt;
 use wgcore::re_exports::bytemuck;
 use wgcore::re_exports::Device;
+use wgcore::shapes::ViewShapeBuffers;
 use wgml::gguf::Gguf;
 use wgml::models::gpt2::cpu::Gpt2Params;
 use wgml::models::gpt2::{Gpt2, Gpt2State, Gpt2Tokenizer, Gpt2Weights};
@@ -19,6 +20,7 @@ pub struct ChatGpt2 {
     tokenizer: AnyTokenizer,
     config: Gpt2Params,
     state: Gpt2State,
+    shapes: ViewShapeBuffers,
 }
 
 impl ChatGpt2 {
@@ -35,6 +37,7 @@ impl ChatGpt2 {
             tokenizer,
             config,
             state,
+            shapes: ViewShapeBuffers::new(),
         })
     }
 
@@ -67,10 +70,6 @@ impl ChatGpt2 {
                 pos: pos as u32,
             };
 
-            // let t0 = Instant::now();
-            let mut queue = KernelInvocationQueue::new(gpu.device());
-            // queue_time += t0.elapsed().as_secs_f64();
-
             // Run the transformer.
             // let t0 = Instant::now();
             let mut logits = {
@@ -78,7 +77,8 @@ impl ChatGpt2 {
 
                 let mut pass = encoder.compute_pass("main_pass", None);
                 self.transformer.dispatch(
-                    &mut queue,
+                    gpu.device(),
+                    &self.shapes,
                     &mut pass,
                     &self.state,
                     &self.weights,

@@ -11,7 +11,7 @@ var<uniform> shape_v: Shape::Shape;
 @group(0) @binding(3)
 var<storage, read_write> out: array<f32>;
 @group(0) @binding(4)
-var<storage, read> m: array<Quant::BlockQ5_K>;
+var<storage, read> m: array<Quant::BlockQ5K>;
 @group(0) @binding(5)
 var<storage, read> v: array<vec4<f32>>;
 

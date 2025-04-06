@@ -1,10 +1,11 @@
 use bytemuck::Pod;
 use nalgebra::DVector;
-use wgcore::kernel::{KernelDispatch, KernelInvocationBuilder, KernelInvocationQueue};
+use wgcore::kernel::KernelDispatch;
+use wgcore::shapes::ViewShapeBuffers;
 use wgcore::tensor::GpuVectorView;
 use wgcore::Shader;
 use wgebra::linalg::Shape;
-use wgpu::{ComputePass, ComputePipeline};
+use wgpu::{ComputePass, ComputePipeline, Device};
 
 #[derive(Shader)]
 #[shader(derive(Shape), src = "silu.wgsl", composable = false)]
@@ -16,17 +17,18 @@ pub struct Silu {
 impl Silu {
     pub fn dispatch<'a, 'b, T: Pod>(
         &'a self,
-        queue: &KernelInvocationQueue<'a>,
+        device: &Device,
+        shapes: &ViewShapeBuffers,
         pass: &mut ComputePass,
         in_out_h1: impl Into<GpuVectorView<'b, T>>,
         in_h2: impl Into<GpuVectorView<'b, T>>,
     ) {
         let h1 = in_out_h1.into();
         let h2 = in_h2.into();
-        let shape_h1 = queue.shape_buffer(h1.shape());
-        let shape_h2 = queue.shape_buffer(h2.shape());
+        let shape_h1 = shapes.get(device, h1.shape());
+        let shape_h2 = shapes.get(device, h2.shape());
 
-        KernelDispatch::new(queue.device(), pass, &self.main)
+        KernelDispatch::new(device, pass, &self.main)
             .bind0([&shape_h1, &shape_h2, h1.buffer(), h2.buffer()])
             .dispatch(h1.len().div_ceil(64));
     }
@@ -46,7 +48,8 @@ impl Silu {
 mod test {
     use nalgebra::DVector;
     use wgcore::gpu::GpuInstance;
-    use wgcore::kernel::{CommandEncoderExt, KernelInvocationQueue};
+    use wgcore::kernel::CommandEncoderExt;
+    use wgcore::shapes::ViewShapeBuffers;
     use wgcore::tensor::GpuVector;
     use wgcore::Shader;
     use wgpu::BufferUsages;
@@ -56,7 +59,7 @@ mod test {
     async fn gpu_silu() {
         let gpu = GpuInstance::new().await.unwrap();
         let silu = super::Silu::from_device(gpu.device()).unwrap();
-        let mut queue = KernelInvocationQueue::new(gpu.device());
+        let shapes = ViewShapeBuffers::new();
         let mut encoder = gpu.device().create_command_encoder(&Default::default());
 
         const LEN: u32 = 1757;
@@ -77,7 +80,7 @@ mod test {
         );
 
         let mut pass = encoder.compute_pass("test", None);
-        silu.dispatch(&mut queue, &mut pass, &gpu_h1, &gpu_h2);
+        silu.dispatch(gpu.device(), &shapes, &mut pass, &gpu_h1, &gpu_h2);
         drop(pass);
 
         gpu_staging_h1.copy_from(&mut encoder, &gpu_h1);

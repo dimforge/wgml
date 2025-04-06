@@ -1,10 +1,11 @@
 use bytemuck::Pod;
 use nalgebra::{Dyn, StorageMut, Vector};
-use wgcore::kernel::{KernelDispatch, KernelInvocationBuilder, KernelInvocationQueue};
-use wgcore::tensor::{GpuMatrixView, GpuVectorView};
+use wgcore::kernel::KernelDispatch;
+use wgcore::shapes::ViewShapeBuffers;
+use wgcore::tensor::GpuMatrixView;
 use wgcore::Shader;
 use wgebra::linalg::Shape;
-use wgpu::{ComputePass, ComputePipeline};
+use wgpu::{ComputePass, ComputePipeline, Device};
 
 #[derive(Shader)]
 #[shader(derive(Shape), src = "softmax.wgsl", composable = false)]
@@ -16,13 +17,14 @@ pub struct SoftMax {
 impl SoftMax {
     pub fn dispatch<'a, 'b, T: Pod>(
         &'a self,
-        queue: &KernelInvocationQueue<'a>,
+        device: &Device,
+        shapes: &ViewShapeBuffers,
         pass: &mut ComputePass,
         in_out_mat: impl Into<GpuMatrixView<'b, T>>,
     ) {
         let in_out_mat = in_out_mat.into();
-        let shape_buf = queue.shape_buffer(in_out_mat.shape());
-        KernelDispatch::new(queue.device(), pass, &self.main)
+        let shape_buf = shapes.get(device, in_out_mat.shape());
+        KernelDispatch::new(device, pass, &self.main)
             .bind0([&shape_buf, in_out_mat.buffer()])
             .dispatch(in_out_mat.shape().size[1]);
     }
@@ -52,7 +54,8 @@ mod test {
     use crate::ops::SoftMax;
     use nalgebra::DVector;
     use wgcore::gpu::GpuInstance;
-    use wgcore::kernel::{CommandEncoderExt, KernelInvocationQueue};
+    use wgcore::kernel::CommandEncoderExt;
+    use wgcore::shapes::ViewShapeBuffers;
     use wgcore::tensor::TensorBuilder;
     use wgcore::Shader;
     use wgpu::BufferUsages;
@@ -62,7 +65,7 @@ mod test {
     async fn gpu_softmax() {
         let gpu = GpuInstance::new().await.unwrap();
         let softmax = super::SoftMax::from_device(gpu.device()).unwrap();
-        let mut queue = KernelInvocationQueue::new(gpu.device());
+        let shapes = ViewShapeBuffers::new();
         let mut encoder = gpu.device().create_command_encoder(&Default::default());
 
         const LEN: u32 = 1757;
@@ -74,7 +77,7 @@ mod test {
             .build(gpu.device());
 
         let mut pass = encoder.compute_pass("test", None);
-        softmax.dispatch(&mut queue, &mut pass, gpu_v0.as_embedded_view());
+        softmax.dispatch(gpu.device(), &shapes, &mut pass, gpu_v0.as_embedded_view());
         drop(pass);
 
         staging.copy_from(&mut encoder, &gpu_v0);

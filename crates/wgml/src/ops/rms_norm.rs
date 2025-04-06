@@ -1,10 +1,11 @@
 use bytemuck::Pod;
 use nalgebra::{DVector, Dyn, Storage, Vector};
-use wgcore::kernel::{KernelDispatch, KernelInvocationBuilder, KernelInvocationQueue};
+use wgcore::kernel::KernelDispatch;
+use wgcore::shapes::ViewShapeBuffers;
 use wgcore::tensor::{GpuScalar, GpuVectorView};
 use wgcore::Shader;
 use wgebra::linalg::Shape;
-use wgpu::{ComputePass, ComputePipeline};
+use wgpu::{ComputePass, ComputePipeline, Device};
 
 #[derive(Shader)]
 #[shader(derive(Shape), src = "rms_norm.wgsl", composable = false)]
@@ -22,7 +23,8 @@ pub struct RmsNormConfig {
 impl RmsNorm {
     pub fn dispatch<'a, 'b, T: Pod>(
         &'a self,
-        queue: &KernelInvocationQueue<'a>,
+        device: &Device,
+        shapes: &ViewShapeBuffers,
         pass: &mut ComputePass,
         config: &GpuScalar<RmsNormConfig>,
         result: impl Into<GpuVectorView<'b, T>>,
@@ -33,11 +35,11 @@ impl RmsNorm {
         let weight = weight.into();
         let result = result.into();
 
-        let value_shape_buf = queue.shape_buffer(value.shape());
-        let weight_shape_buf = queue.shape_buffer(weight.shape());
-        let result_shape_buf = queue.shape_buffer(result.shape());
+        let value_shape_buf = shapes.get(device, value.shape());
+        let weight_shape_buf = shapes.get(device, weight.shape());
+        let result_shape_buf = shapes.get(device, result.shape());
 
-        KernelDispatch::new(queue.device(), pass, &self.main)
+        KernelDispatch::new(device, pass, &self.main)
             .bind0([
                 &value_shape_buf,
                 &weight_shape_buf,
@@ -66,7 +68,8 @@ mod test {
     use crate::ops::{RmsNorm, RmsNormConfig};
     use nalgebra::DVector;
     use wgcore::gpu::GpuInstance;
-    use wgcore::kernel::{CommandEncoderExt, KernelInvocationQueue};
+    use wgcore::kernel::CommandEncoderExt;
+    use wgcore::shapes::ViewShapeBuffers;
     use wgcore::tensor::{GpuScalar, GpuVector};
     use wgcore::Shader;
     use wgpu::BufferUsages;
@@ -76,7 +79,7 @@ mod test {
     async fn gpu_rms_norm() {
         let gpu = GpuInstance::new().await.unwrap();
         let rmsnorm = super::RmsNorm::from_device(gpu.device()).unwrap();
-        let mut queue = KernelInvocationQueue::new(gpu.device());
+        let shapes = ViewShapeBuffers::new();
         let mut encoder = gpu.device().create_command_encoder(&Default::default());
 
         const LEN: u32 = 1757;
@@ -98,12 +101,24 @@ mod test {
             BufferUsages::MAP_READ | BufferUsages::COPY_DST,
         );
 
-        let config = GpuScalar::init(gpu.device(), RmsNormConfig {
-            nudge_factor: 1.0e-6
-        }, BufferUsages::UNIFORM);
+        let config = GpuScalar::init(
+            gpu.device(),
+            RmsNormConfig {
+                nudge_factor: 1.0e-6,
+            },
+            BufferUsages::UNIFORM,
+        );
 
         let mut pass = encoder.compute_pass("test", None);
-        rmsnorm.dispatch(&mut queue, &mut pass, &config, &gpu_result, &gpu_value, &gpu_weight);
+        rmsnorm.dispatch(
+            gpu.device(),
+            &shapes,
+            &mut pass,
+            &config,
+            &gpu_result,
+            &gpu_value,
+            &gpu_weight,
+        );
         drop(pass);
 
         gpu_staging.copy_from(&mut encoder, &gpu_result);

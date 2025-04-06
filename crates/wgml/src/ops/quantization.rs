@@ -9,18 +9,18 @@ pub struct Quantization;
 mod tests {
     use super::*;
     use crate::ops::gemv_quant::{
-        GpuBlockQ4_0x2, GpuBlockQ4_1x2, GpuBlockQ4_K, GpuBlockQ5_0x2, GpuBlockQ5_1x2, GpuBlockQ5_K,
-        GpuBlockQ6_Kx2, GpuBlockQ8_K,
+        GpuBlockQ4K, GpuBlockQ4_0x2, GpuBlockQ4_1x2, GpuBlockQ5K, GpuBlockQ5_0x2, GpuBlockQ5_1x2,
+        GpuBlockQ6Kx2, GpuBlockQ8K,
     };
     use crate::ops::GpuBlockQ8_0x2;
     use crate::quantization::{
-        BlockQ4_0, BlockQ4_1, BlockQ4_K, BlockQ5_0, BlockQ5_1, BlockQ5_K, BlockQ6_K, BlockQ8_0,
-        BlockQ8_K,
+        BlockQ4K, BlockQ4_0, BlockQ4_1, BlockQ5K, BlockQ5_0, BlockQ5_1, BlockQ6K, BlockQ8K,
+        BlockQ8_0,
     };
     use bytemuck::Pod;
     use nalgebra::DVector;
     use wgcore::gpu::GpuInstance;
-    use wgcore::kernel::{CommandEncoderExt, KernelDispatch, KernelInvocation, KernelInvocationBuilder, KernelInvocationQueue};
+    use wgcore::kernel::{CommandEncoderExt, KernelDispatch};
     use wgcore::tensor::GpuVector;
     use wgpu::{BufferUsages, ComputePipeline, Device};
 
@@ -39,12 +39,10 @@ mod tests {
     async fn dequantization() {
         let gpu = GpuInstance::new().await.unwrap();
         let quant_test = QuantTest::from_device(gpu.device()).unwrap();
-        let mut queue = KernelInvocationQueue::new(gpu.device());
         let mut encoder = gpu.device().create_command_encoder(&Default::default());
 
         struct TestData<T, GpuT> {
             in_vec: DVector<T>,
-            out_vec: DVector<f32>,
             in_buf: GpuVector<GpuT>,
             out_buf: GpuVector<f32>,
             staging_buf: GpuVector<f32>,
@@ -70,7 +68,6 @@ mod tests {
                 );
                 Self {
                     in_vec,
-                    out_vec,
                     in_buf,
                     out_buf,
                     staging_buf,
@@ -82,9 +79,7 @@ mod tests {
         let in_q8_0 = DVector::from_fn(8, |i, _| {
             let scale = half::f16::from_f32(1.234).to_bits();
             let mut data = [i as i8 * 16 + i8::MIN; 32];
-            data.iter_mut()
-                .enumerate()
-                .for_each((|(k, d)| *d += k as i8));
+            data.iter_mut().enumerate().for_each(|(k, d)| *d += k as i8);
             BlockQ8_0 { scale, data }
         });
         let data_q8_0 = TestData::<_, GpuBlockQ8_0x2>::new(gpu.device(), in_q8_0, 32);
@@ -93,9 +88,7 @@ mod tests {
         let in_q4_0 = DVector::from_fn(16, |i, _| {
             let scale = half::f16::from_f32(1.234).to_bits();
             let mut data = [i as u8 * 16; 16];
-            data.iter_mut()
-                .enumerate()
-                .for_each((|(k, d)| *d += k as u8));
+            data.iter_mut().enumerate().for_each(|(k, d)| *d += k as u8);
             BlockQ4_0 { d: scale, qs: data }
         });
         let data_q4_0 = TestData::<_, GpuBlockQ4_0x2>::new(gpu.device(), in_q4_0, 32);
@@ -105,9 +98,7 @@ mod tests {
             let scale = half::f16::from_f32(1.234).to_bits();
             let mid = 3;
             let mut data = [i as u8 * 16; 16];
-            data.iter_mut()
-                .enumerate()
-                .for_each((|(k, d)| *d += k as u8));
+            data.iter_mut().enumerate().for_each(|(k, d)| *d += k as u8);
             BlockQ4_1 {
                 d: scale,
                 m: mid,
@@ -119,11 +110,8 @@ mod tests {
         // Q5_0
         let in_q5_0 = DVector::from_fn(16, |i, _| {
             let scale = half::f16::from_f32(1.234).to_bits();
-            let mid = 3;
             let mut data = [i as u8 * 16; 16];
-            data.iter_mut()
-                .enumerate()
-                .for_each((|(k, d)| *d += k as u8));
+            data.iter_mut().enumerate().for_each(|(k, d)| *d += k as u8);
             BlockQ5_0 {
                 d: scale,
                 qh: [1, 100, 200, 250],
@@ -135,11 +123,8 @@ mod tests {
         // Q5_1
         let in_q5_1 = DVector::from_fn(16, |i, _| {
             let scale = half::f16::from_f32(1.234).to_bits();
-            let mid = 3;
             let mut data = [i as u8 * 16; 16];
-            data.iter_mut()
-                .enumerate()
-                .for_each((|(k, d)| *d += k as u8));
+            data.iter_mut().enumerate().for_each(|(k, d)| *d += k as u8);
             BlockQ5_1 {
                 d: scale,
                 m: 125,
@@ -151,39 +136,36 @@ mod tests {
 
         // Q8_k
         let in_q8_k = DVector::from_fn(16, |i, _| {
-            let scale = half::f16::from_f32(1.234).to_bits();
-            let mid = 3;
             let mut data = [i as i8 * 8 - 127; 256];
             data.iter_mut()
                 .enumerate()
-                .for_each((|(k, d)| *d = d.saturating_add(k as i8)));
-            BlockQ8_K {
+                .for_each(|(k, d)| *d = d.saturating_add(k as i8));
+            BlockQ8K {
                 d: 1.234,
                 qs: data,
                 bsums: [0; 16],
             }
         });
-        let data_q8_k = TestData::<_, GpuBlockQ8_K>::new(gpu.device(), in_q8_k, 256);
+        let data_q8_k = TestData::<_, GpuBlockQ8K>::new(gpu.device(), in_q8_k, 256);
 
         // Q5_k
         let in_q5_k = DVector::from_fn(16, |i, _| {
             let scale1 = half::f16::from_f32(1.234).to_bits();
             let scale2 = half::f16::from_f32(5.678).to_bits();
-            let mid = 3;
             let mut scales = [i as u8 * 16; 12];
             let mut qs = [i as u8 * 16; 256 / 2];
             let mut qh = [i as u8 * 16; 256 / 8];
             scales
                 .iter_mut()
                 .enumerate()
-                .for_each((|(k, d)| *d += k as u8));
+                .for_each(|(k, d)| *d += k as u8);
             qs.iter_mut()
                 .enumerate()
-                .for_each((|(k, d)| *d = d.saturating_add(k as u8)));
+                .for_each(|(k, d)| *d = d.saturating_add(k as u8));
             qh.iter_mut()
                 .enumerate()
-                .for_each((|(k, d)| *d = d.saturating_add(k as u8)));
-            BlockQ5_K {
+                .for_each(|(k, d)| *d = d.saturating_add(k as u8));
+            BlockQ5K {
                 d: scale1,
                 dmin: scale2,
                 scales,
@@ -191,57 +173,53 @@ mod tests {
                 qs,
             }
         });
-        let data_q5_k = TestData::<_, GpuBlockQ5_K>::new(gpu.device(), in_q5_k, 256);
+        let data_q5_k = TestData::<_, GpuBlockQ5K>::new(gpu.device(), in_q5_k, 256);
 
         // Q4_k
         let in_q4_k = DVector::from_fn(16, |i, _| {
             let scale1 = half::f16::from_f32(1.234).to_bits();
             let scale2 = half::f16::from_f32(5.678).to_bits();
-            let mid = 3;
             let mut scales = [i as u8 * 16; 12];
             let mut qs = [i as u8 * 16; 256 / 2];
             let mut qh = [i as u8 * 16; 256 / 8];
             scales
                 .iter_mut()
                 .enumerate()
-                .for_each((|(k, d)| *d += k as u8));
+                .for_each(|(k, d)| *d += k as u8);
             qs.iter_mut()
                 .enumerate()
-                .for_each((|(k, d)| *d = d.saturating_add(k as u8)));
+                .for_each(|(k, d)| *d = d.saturating_add(k as u8));
             qh.iter_mut()
                 .enumerate()
-                .for_each((|(k, d)| *d = d.saturating_add(k as u8)));
-            BlockQ4_K {
+                .for_each(|(k, d)| *d = d.saturating_add(k as u8));
+            BlockQ4K {
                 d: scale1,
                 dmin: scale2,
                 scales,
                 qs,
             }
         });
-        let data_q4_k = TestData::<_, GpuBlockQ4_K>::new(gpu.device(), in_q4_k, 256);
+        let data_q4_k = TestData::<_, GpuBlockQ4K>::new(gpu.device(), in_q4_k, 256);
 
         // Q6_k
         let in_q6_k = DVector::from_fn(16, |i, _| {
-            let scale1 = half::f16::from_f32(1.234).to_bits();
-            let scale2 = half::f16::from_f32(5.678).to_bits();
-            let mid = 3;
             let mut scales = [i as i8 * 8 - 127; 256 / 16];
             let mut ql = [i as u8 * 8; 256 / 2];
             let mut qh = [i as u8 * 8; 256 / 4];
             scales
                 .iter_mut()
                 .enumerate()
-                .for_each((|(k, d)| *d += k as i8));
-            ql.iter_mut().enumerate().for_each((|(k, d)| *d += k as u8));
-            qh.iter_mut().enumerate().for_each((|(k, d)| *d += k as u8));
-            BlockQ6_K {
+                .for_each(|(k, d)| *d += k as i8);
+            ql.iter_mut().enumerate().for_each(|(k, d)| *d += k as u8);
+            qh.iter_mut().enumerate().for_each(|(k, d)| *d += k as u8);
+            BlockQ6K {
                 ql,
                 qh,
                 scales,
                 d: 123,
             }
         });
-        let data_q6_k = TestData::<_, GpuBlockQ6_Kx2>::new(gpu.device(), in_q6_k, 256);
+        let data_q6_k = TestData::<_, GpuBlockQ6Kx2>::new(gpu.device(), in_q6_k, 256);
 
         // Kernel call.
         let max_len = data_q8_0
@@ -376,7 +354,7 @@ mod tests {
             epsilon = 1.0e-3
         );
 
-        // Test result Q8_K
+        // Test result Q8K
         let gpu_result_v8_k = data_q8_k.staging_buf.read(gpu.device()).await.unwrap();
         let cpu_result_v8_k: Vec<_> = data_q8_k
             .in_vec
@@ -389,7 +367,7 @@ mod tests {
             epsilon = 1.0e-3
         );
 
-        // Test result Q5_K
+        // Test result Q5K
         let gpu_result_v5_k = data_q5_k.staging_buf.read(gpu.device()).await.unwrap();
         let cpu_result_v5_k: Vec<_> = data_q5_k
             .in_vec
@@ -402,7 +380,7 @@ mod tests {
             epsilon = 1.0e-3
         );
 
-        // Test result Q4_K
+        // Test result Q4K
         let gpu_result_v4_k = data_q4_k.staging_buf.read(gpu.device()).await.unwrap();
         let cpu_result_v4_k: Vec<_> = data_q4_k
             .in_vec
@@ -415,7 +393,7 @@ mod tests {
             epsilon = 1.0e-3
         );
 
-        // Test result Q6_K
+        // Test result Q6K
         let gpu_result_v6_k = data_q6_k.staging_buf.read(gpu.device()).await.unwrap();
         let cpu_result_v6_k: Vec<_> = data_q6_k
             .in_vec

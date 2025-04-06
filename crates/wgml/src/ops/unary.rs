@@ -2,7 +2,8 @@ use bytemuck::Pod;
 use naga_oil::compose::{ComposerError, NagaModuleDescriptor};
 use naga_oil::redirect::Redirector;
 use nalgebra::{Dyn, StorageMut, Vector, Vector4};
-use wgcore::kernel::{KernelDispatch, KernelInvocationBuilder, KernelInvocationQueue};
+use wgcore::kernel::KernelDispatch;
+use wgcore::shapes::ViewShapeBuffers;
 use wgcore::tensor::{GpuScalar, GpuVectorView};
 use wgcore::utils;
 use wgcore::Shader;
@@ -156,7 +157,8 @@ impl Unary {
 
     pub fn dispatch<'a, 'b, T: Pod + nalgebra::Scalar>(
         &'a self,
-        queue: &mut KernelInvocationQueue<'a>,
+        device: &Device,
+        shapes: &ViewShapeBuffers,
         pass: &mut ComputePass,
         dest: impl Into<GpuVectorView<'b, T>>,
         src: impl Into<GpuVectorView<'b, T>>,
@@ -164,8 +166,8 @@ impl Unary {
     ) {
         let dest = dest.into();
         let src = src.into();
-        let shape_dest = queue.shape_buffer(dest.shape());
-        let shape_src = queue.shape_buffer(src.shape());
+        let shape_dest = shapes.get(device, dest.shape());
+        let shape_src = shapes.get(device, src.shape());
         let workgroups = [dest.len().div_ceil(64), 1, 1];
 
         assert!(
@@ -181,12 +183,12 @@ impl Unary {
                 src.buffer(),
                 args.buffer(),
             ];
-            KernelDispatch::new(queue.device(), pass, &self.0)
+            KernelDispatch::new(device, pass, &self.0)
                 .bind0(inputs)
                 .dispatch(workgroups);
         } else {
             let inputs = [&shape_dest, &shape_src, dest.buffer(), src.buffer()];
-            KernelDispatch::new(queue.device(), pass, &self.0)
+            KernelDispatch::new(device, pass, &self.0)
                 .bind0(inputs)
                 .dispatch(workgroups);
         };
@@ -229,13 +231,14 @@ impl UnaryInplace {
 
     pub fn dispatch<'a, 'b, T: Pod + nalgebra::Scalar>(
         &'a self,
-        queue: &mut KernelInvocationQueue<'a>,
+        device: &Device,
+        shapes: &ViewShapeBuffers,
         pass: &mut ComputePass,
         src: impl Into<GpuVectorView<'b, T>>,
         args: Option<&'b GpuScalar<Vector4<T>>>,
     ) {
         let src = src.into();
-        let shape_src = queue.shape_buffer(src.shape());
+        let shape_src = shapes.get(device, src.shape());
         let workgroups = [src.len().div_ceil(64), 1, 1];
 
         assert!(
@@ -245,12 +248,12 @@ impl UnaryInplace {
 
         if let Some(args) = &args {
             let inputs = [(&*shape_src, 1), (src.buffer(), 3), (args.buffer(), 4)];
-            KernelDispatch::new(queue.device(), pass, &self.0)
+            KernelDispatch::new(device, pass, &self.0)
                 .bind_at(0, inputs)
                 .dispatch(workgroups);
         } else {
             let inputs = [(&*shape_src, 1), (src.buffer(), 3)];
-            KernelDispatch::new(queue.device(), pass, &self.0)
+            KernelDispatch::new(device, pass, &self.0)
                 .bind_at(0, inputs)
                 .dispatch(workgroups);
         };
@@ -262,7 +265,8 @@ mod test {
     use crate::ops::UnaryOp;
     use nalgebra::{DVector, Vector4};
     use wgcore::gpu::GpuInstance;
-    use wgcore::kernel::{CommandEncoderExt, KernelInvocationQueue};
+    use wgcore::kernel::CommandEncoderExt;
+    use wgcore::shapes::ViewShapeBuffers;
     use wgcore::tensor::{GpuScalar, GpuVector};
     use wgpu::BufferUsages;
 
@@ -292,11 +296,11 @@ mod test {
             UnaryOp::AddScalar,
         ];
         let gpu = GpuInstance::new().await.unwrap();
+        let shapes = ViewShapeBuffers::new();
 
         for op in ops {
             println!("Checking {:?}", op);
             let unop = super::Unary::new(gpu.device(), op).unwrap();
-            let mut queue = KernelInvocationQueue::new(gpu.device());
             let mut encoder = gpu.device().create_command_encoder(&Default::default());
 
             const LEN: u32 = 1757;
@@ -318,7 +322,14 @@ mod test {
                 GpuVector::uninit(device, LEN, BufferUsages::MAP_READ | BufferUsages::COPY_DST);
 
             let mut pass = encoder.compute_pass("test", None);
-            unop.dispatch(&mut queue, &mut pass, &gpu_dst, &gpu_src, gpu_args.as_ref());
+            unop.dispatch(
+                gpu.device(),
+                &shapes,
+                &mut pass,
+                &gpu_dst,
+                &gpu_src,
+                gpu_args.as_ref(),
+            );
             drop(pass);
 
             staging.copy_from(&mut encoder, &gpu_dst);

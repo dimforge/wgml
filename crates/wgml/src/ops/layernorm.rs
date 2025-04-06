@@ -1,10 +1,11 @@
 use bytemuck::Pod;
 use nalgebra::DVector;
-use wgcore::kernel::{KernelDispatch, KernelInvocationBuilder, KernelInvocationQueue};
+use wgcore::kernel::KernelDispatch;
+use wgcore::shapes::ViewShapeBuffers;
 use wgcore::tensor::GpuVectorView;
 use wgcore::Shader;
 use wgebra::linalg::Shape;
-use wgpu::{ComputePass, ComputePipeline};
+use wgpu::{ComputePass, ComputePipeline, Device};
 
 #[derive(Shader)]
 #[shader(derive(Shape), src = "layernorm.wgsl", composable = false)]
@@ -16,7 +17,8 @@ pub struct LayerNorm {
 impl LayerNorm {
     pub fn dispatch<'a, 'b, T: Pod>(
         &'a self,
-        queue: &mut KernelInvocationQueue<'a>,
+        device: &Device,
+        shapes: &ViewShapeBuffers,
         pass: &mut ComputePass,
         out_vec: impl Into<GpuVectorView<'b, T>>,
         in_vec: impl Into<GpuVectorView<'b, T>>,
@@ -30,9 +32,9 @@ impl LayerNorm {
             "LayerNorm: dimension mismatch."
         );
 
-        let in_shape = queue.shape_buffer(in_vec.shape());
-        let out_shape = queue.shape_buffer(out_vec.shape());
-        KernelDispatch::new(queue.device(), pass, &self.main)
+        let in_shape = shapes.get(device, in_vec.shape());
+        let out_shape = shapes.get(device, out_vec.shape());
+        KernelDispatch::new(device, pass, &self.main)
             .bind0([&in_shape, &out_shape, in_vec.buffer(), out_vec.buffer()])
             .dispatch(1);
     }
@@ -56,7 +58,8 @@ mod test {
     use crate::ops::LayerNorm;
     use nalgebra::DVector;
     use wgcore::gpu::GpuInstance;
-    use wgcore::kernel::{CommandEncoderExt, KernelInvocationQueue};
+    use wgcore::kernel::CommandEncoderExt;
+    use wgcore::shapes::ViewShapeBuffers;
     use wgcore::tensor::TensorBuilder;
     use wgcore::Shader;
     use wgpu::BufferUsages;
@@ -66,7 +69,7 @@ mod test {
     async fn gpu_layernorm() {
         let gpu = GpuInstance::new().await.unwrap();
         let layernorm = super::LayerNorm::from_device(gpu.device()).unwrap();
-        let mut queue = KernelInvocationQueue::new(gpu.device());
+        let shapes = ViewShapeBuffers::new();
         let mut encoder = gpu.device().create_command_encoder(&Default::default());
 
         const LEN: u32 = 1757;
@@ -81,7 +84,7 @@ mod test {
             .build(gpu.device());
 
         let mut pass = encoder.compute_pass("test", None);
-        layernorm.dispatch(&mut queue, &mut pass, &gpu_out, &gpu_v0);
+        layernorm.dispatch(gpu.device(), &shapes, &mut pass, &gpu_out, &gpu_v0);
         drop(pass);
 
         staging.copy_from(&mut encoder, &gpu_out);

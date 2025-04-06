@@ -1,7 +1,6 @@
-use crate::gguf::GgufTensorData;
 use crate::ops::{
-    GpuBlockQ4_0x2, GpuBlockQ4_1x2, GpuBlockQ4_K, GpuBlockQ5_0x2, GpuBlockQ5_1x2, GpuBlockQ5_K,
-    GpuBlockQ6_Kx2, GpuBlockQ8_0x2, GpuBlockQ8_K,
+    GpuBlockQ4K, GpuBlockQ4_0x2, GpuBlockQ4_1x2, GpuBlockQ5K, GpuBlockQ5_0x2, GpuBlockQ5_1x2,
+    GpuBlockQ6Kx2, GpuBlockQ8K, GpuBlockQ8_0x2,
 };
 use wgcore::shapes::ViewShape;
 use wgcore::tensor::{GpuMatrix, RowMajor};
@@ -14,10 +13,10 @@ pub enum GpuQuantMatrix {
     Q5_1(GpuMatrix<GpuBlockQ5_1x2>),
     Q4_0(GpuMatrix<GpuBlockQ4_0x2>),
     Q4_1(GpuMatrix<GpuBlockQ4_1x2>),
-    Q8_K(GpuMatrix<GpuBlockQ8_K>),
-    Q6_K(GpuMatrix<GpuBlockQ6_Kx2>),
-    Q5_K(GpuMatrix<GpuBlockQ5_K>),
-    Q4_K(GpuMatrix<GpuBlockQ4_K>),
+    Q8K(GpuMatrix<GpuBlockQ8K>),
+    Q6K(GpuMatrix<GpuBlockQ6Kx2>),
+    Q5K(GpuMatrix<GpuBlockQ5K>),
+    Q4K(GpuMatrix<GpuBlockQ4K>),
 }
 
 macro_rules! impl_from(
@@ -37,10 +36,10 @@ impl_from!(
     Q5_1, GpuBlockQ5_1x2;
     Q4_0, GpuBlockQ4_0x2;
     Q4_1, GpuBlockQ4_1x2;
-    Q8_K, GpuBlockQ8_K;
-    Q6_K, GpuBlockQ6_Kx2;
-    Q5_K, GpuBlockQ5_K;
-    Q4_K, GpuBlockQ4_K
+    Q8K, GpuBlockQ8K;
+    Q6K, GpuBlockQ6Kx2;
+    Q5K, GpuBlockQ5K;
+    Q4K, GpuBlockQ4K
 );
 
 impl GpuQuantMatrix {
@@ -52,10 +51,10 @@ impl GpuQuantMatrix {
             Self::Q5_1(m) => m.as_view::<RowMajor>().shape(),
             Self::Q4_0(m) => m.as_view::<RowMajor>().shape(),
             Self::Q4_1(m) => m.as_view::<RowMajor>().shape(),
-            Self::Q8_K(m) => m.as_view::<RowMajor>().shape(),
-            Self::Q6_K(m) => m.as_view::<RowMajor>().shape(),
-            Self::Q5_K(m) => m.as_view::<RowMajor>().shape(),
-            Self::Q4_K(m) => m.as_view::<RowMajor>().shape(),
+            Self::Q8K(m) => m.as_view::<RowMajor>().shape(),
+            Self::Q6K(m) => m.as_view::<RowMajor>().shape(),
+            Self::Q5K(m) => m.as_view::<RowMajor>().shape(),
+            Self::Q4K(m) => m.as_view::<RowMajor>().shape(),
         }
     }
 
@@ -67,10 +66,10 @@ impl GpuQuantMatrix {
             Self::Q5_1(m) => m.buffer(),
             Self::Q4_0(m) => m.buffer(),
             Self::Q4_1(m) => m.buffer(),
-            Self::Q8_K(m) => m.buffer(),
-            Self::Q6_K(m) => m.buffer(),
-            Self::Q5_K(m) => m.buffer(),
-            Self::Q4_K(m) => m.buffer(),
+            Self::Q8K(m) => m.buffer(),
+            Self::Q6K(m) => m.buffer(),
+            Self::Q5K(m) => m.buffer(),
+            Self::Q4K(m) => m.buffer(),
         }
     }
 }

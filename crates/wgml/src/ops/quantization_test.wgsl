@@ -22,20 +22,20 @@ var<storage, read> in_q5_1: array<Quant::BlockQ5_1x2>;
 @group(1) @binding(1)
 var<storage, read_write> out_q5_1: array<f32>;
 @group(1) @binding(2)
-var<storage, read> in_q8_k: array<Quant::BlockQ8_K>;
+var<storage, read> in_q8_k: array<Quant::BlockQ8K>;
 @group(1) @binding(3)
 var<storage, read_write> out_q8_k: array<f32>;
 @group(1) @binding(4)
-var<storage, read> in_q5_k: array<Quant::BlockQ5_K>;
+var<storage, read> in_q5_k: array<Quant::BlockQ5K>;
 @group(1) @binding(5)
 var<storage, read_write> out_q5_k: array<f32>;
 @group(1) @binding(6)
-var<storage, read> in_q4_k: array<Quant::BlockQ4_K>;
+var<storage, read> in_q4_k: array<Quant::BlockQ4K>;
 @group(1) @binding(7)
 var<storage, read_write> out_q4_k: array<f32>;
 
 @group(2) @binding(0)
-var<storage, read> in_q6_k: array<Quant::BlockQ6_Kx2>;
+var<storage, read> in_q6_k: array<Quant::BlockQ6Kx2>;
 @group(2) @binding(1)
 var<storage, read_write> out_q6_k: array<f32>;
 

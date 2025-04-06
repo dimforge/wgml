@@ -2,12 +2,13 @@ use crate::models::llama2::cpu::softmax;
 use crate::ops::SoftMax;
 use bytemuck::Pod;
 use nalgebra::{DMatrix, DVector};
-use wgcore::kernel::{KernelDispatch, KernelInvocationBuilder, KernelInvocationQueue};
+use wgcore::kernel::KernelDispatch;
+use wgcore::shapes::ViewShapeBuffers;
 use wgcore::tensor::{ColumnMajor, GpuMatrix, GpuScalar, GpuVector};
 use wgcore::Shader;
 use wgebra::linalg::Shape;
-use wgebra::{Gemm, Gemv, GemvVariant};
-use wgpu::{ComputePass, ComputePipeline, Queue};
+use wgebra::{Gemv, GemvVariant};
+use wgpu::{ComputePass, ComputePipeline, Device, Queue};
 
 #[derive(Shader)]
 #[shader(
@@ -36,9 +37,9 @@ pub struct BatchedMultiqueryAttentionParams {
 }
 
 impl BatchedMultiqueryAttention {
-    fn dispatch_mult_mask<'a, T: Pod>(
-        &'a self,
-        queue: &KernelInvocationQueue<'a>,
+    fn dispatch_mult_mask<T: Pod>(
+        &self,
+        device: &Device,
         pass: &mut ComputePass,
         params: &BatchedMultiqueryAttentionParams,
         params_gpu: &GpuScalar<BatchedMultiqueryAttentionParams>,
@@ -46,14 +47,15 @@ impl BatchedMultiqueryAttention {
     ) {
         let rounded_pos = (params.pos + 1).div_ceil(4) * 4;
 
-        KernelDispatch::new(queue.device(), pass, &self.mult_mask_attn)
+        KernelDispatch::new(device, pass, &self.mult_mask_attn)
             .bind_at(0, [(params_gpu.buffer(), 0), (attn.buffer(), 4)])
             .dispatch((params.n_heads * rounded_pos).div_ceil(64));
     }
 
     pub fn dispatch_multi<'a, T: Pod>(
         &'a self,
-        queue: &KernelInvocationQueue<'a>,
+        device: &Device,
+        shapes: &ViewShapeBuffers,
         gpu_queue: &Queue,
         pass: &mut ComputePass,
         gemv: &'a Gemv,
@@ -101,20 +103,20 @@ impl BatchedMultiqueryAttention {
         //       The shape cache should have a mechanism for updating some existing
         //       buffers in-place? Or switch to a LRU cache?
 
-        queue.shapes.put_tmp(queue.device(), gpu_queue, k.shape());
-        queue.shapes.put_tmp(queue.device(), gpu_queue, att.shape());
-        queue.shapes.put_tmp(queue.device(), gpu_queue, att_softmax.shape());
-        queue.shapes.put_tmp(queue.device(), gpu_queue, v.shape());
+        shapes.put_tmp(device, gpu_queue, k.shape());
+        shapes.put_tmp(device, gpu_queue, att.shape());
+        shapes.put_tmp(device, gpu_queue, att_softmax.shape());
+        shapes.put_tmp(device, gpu_queue, v.shape());
 
-        gemv.dispatch_generic(queue, pass, att, k, q, GemvVariant::GemvTrFast);
-        self.dispatch_mult_mask(queue, pass, params, params_gpu, &attn);
-        softmax.dispatch(queue, pass, att_softmax);
-        gemv.dispatch(queue, pass, xb, v, att);
+        gemv.dispatch_generic(device, shapes, pass, att, k, q, GemvVariant::GemvTrFast);
+        self.dispatch_mult_mask(device, pass, params, params_gpu, attn);
+        softmax.dispatch(device, shapes, pass, att_softmax);
+        gemv.dispatch(device, shapes, pass, xb, v, att);
     }
 
-    pub fn dispatch<'a, T: Pod>(
-        &'a self,
-        queue: &KernelInvocationQueue<'a>,
+    pub fn dispatch<T: Pod>(
+        &self,
+        device: &Device,
         pass: &mut ComputePass,
         n_heads: u32,
         params: &GpuScalar<BatchedMultiqueryAttentionParams>,
@@ -124,7 +126,7 @@ impl BatchedMultiqueryAttention {
         attn: &GpuMatrix<T>,
         xb: &GpuVector<T>,
     ) {
-        KernelDispatch::new(queue.device(), pass, &self.main)
+        KernelDispatch::new(device, pass, &self.main)
             .bind0([
                 params.buffer(),
                 q.buffer(),
@@ -195,13 +197,14 @@ impl BatchedMultiqueryAttention {
 
 #[cfg(test)]
 mod test {
-    use crate::ops::{BatchedMultiqueryAttention, BatchedMultiqueryAttentionParams, SoftMax};
+    use crate::ops::{BatchedMultiqueryAttentionParams, SoftMax};
     use nalgebra::{DMatrix, DVector};
     use wgcore::gpu::GpuInstance;
-    use wgcore::kernel::{CommandEncoderExt, KernelInvocationQueue};
+    use wgcore::kernel::CommandEncoderExt;
+    use wgcore::shapes::ViewShapeBuffers;
     use wgcore::tensor::{GpuMatrix, GpuScalar, GpuVector};
     use wgcore::Shader;
-    use wgebra::{Gemm, Gemv};
+    use wgebra::Gemv;
     use wgpu::BufferUsages;
 
     #[futures_test::test]
@@ -210,7 +213,6 @@ mod test {
         let gpu = GpuInstance::new().await.unwrap();
         let batched_multihead_attention =
             super::BatchedMultiqueryAttention::from_device(gpu.device()).unwrap();
-        let mut queue = KernelInvocationQueue::new(gpu.device());
         let mut encoder = gpu.device().create_command_encoder(&Default::default());
 
         // let mut params = BatchedMultiqueryAttentionParams { seq_len: 131072, kv_dim: 256, kv_mul: 6, n_heads: 12, head_size: 128, pos: 9 };
@@ -258,7 +260,7 @@ mod test {
 
         let mut pass = encoder.compute_pass("test", None);
         batched_multihead_attention.dispatch(
-            &mut queue,
+            gpu.device(),
             &mut pass,
             params.n_heads,
             &gpu_params,
@@ -307,6 +309,7 @@ mod test {
         let gpu = GpuInstance::new().await.unwrap();
         let batched_multihead_attention =
             super::BatchedMultiqueryAttention::from_device(gpu.device()).unwrap();
+        let shapes = ViewShapeBuffers::new();
         let matmul = Gemv::from_device(gpu.device()).unwrap();
         let softmax = SoftMax::from_device(gpu.device()).unwrap();
 
@@ -353,7 +356,6 @@ mod test {
         );
 
         for pos in 0..9 {
-            let mut queue = KernelInvocationQueue::new(gpu.device());
             let mut encoder = gpu.device().create_command_encoder(&Default::default());
             params.pos = pos;
 
@@ -361,7 +363,8 @@ mod test {
 
             let mut pass = encoder.compute_pass("test", None);
             batched_multihead_attention.dispatch_multi(
-                &mut queue,
+                gpu.device(),
+                &shapes,
                 gpu.queue(),
                 &mut pass,
                 &matmul,

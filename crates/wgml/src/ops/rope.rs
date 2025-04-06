@@ -1,10 +1,11 @@
 use bytemuck::Pod;
 use nalgebra::{vector, DVector, DVectorViewMut, Rotation2};
-use wgcore::kernel::{KernelDispatch, KernelInvocationBuilder, KernelInvocationQueue};
+use wgcore::kernel::KernelDispatch;
+use wgcore::shapes::ViewShapeBuffers;
 use wgcore::tensor::{GpuScalar, GpuVectorView};
 use wgcore::Shader;
 use wgebra::linalg::Shape;
-use wgpu::{ComputePass, ComputePipeline};
+use wgpu::{ComputePass, ComputePipeline, Device};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum RoPEVariant {
@@ -36,7 +37,8 @@ pub struct RoPEConfig {
 impl RoPE {
     pub fn dispatch<'a, 'b, T: Pod>(
         &'a self,
-        queue: &KernelInvocationQueue<'a>,
+        device: &Device,
+        shapes: &ViewShapeBuffers,
         pass: &mut ComputePass,
         variant: RoPEVariant,
         shape: &GpuScalar<RoPEConfig>,
@@ -53,15 +55,15 @@ impl RoPE {
             "The Query vector must be larger than, or as large as, the Key vector."
         );
 
-        let shape_q = queue.shape_buffer(in_out_q.shape());
-        let shape_k = queue.shape_buffer(in_out_k.shape());
+        let shape_q = shapes.get(device, in_out_q.shape());
+        let shape_k = shapes.get(device, in_out_k.shape());
 
         let pipeline = match variant {
             RoPEVariant::Original => &self.main,
             RoPEVariant::Neox => &self.main_neox,
         };
 
-        KernelDispatch::new(queue.device(), pass, pipeline)
+        KernelDispatch::new(device, pass, pipeline)
             .bind0([
                 &shape_q,
                 &shape_k,
@@ -120,7 +122,8 @@ mod test {
     use crate::ops::{RoPE, RoPEVariant};
     use nalgebra::DVector;
     use wgcore::gpu::GpuInstance;
-    use wgcore::kernel::{CommandEncoderExt, KernelInvocationQueue};
+    use wgcore::kernel::CommandEncoderExt;
+    use wgcore::shapes::ViewShapeBuffers;
     use wgcore::tensor::TensorBuilder;
     use wgcore::Shader;
     use wgpu::BufferUsages;
@@ -130,7 +133,7 @@ mod test {
     async fn gpu_rope() {
         let gpu = GpuInstance::new().await.unwrap();
         let rope = super::RoPE::from_device(gpu.device()).unwrap();
-        let mut queue = KernelInvocationQueue::new(gpu.device());
+        let shapes = ViewShapeBuffers::new();
         let mut encoder = gpu.device().create_command_encoder(&Default::default());
 
         const HEAD_SIZE: u32 = 128;
@@ -162,7 +165,8 @@ mod test {
 
         let mut pass = encoder.compute_pass("test", None);
         rope.dispatch(
-            &mut queue,
+            gpu.device(),
+            &shapes,
             &mut pass,
             RoPEVariant::Original,
             &gpu_indices,

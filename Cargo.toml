@@ -25,9 +25,19 @@ rust.unexpected_cfgs = { level = "warn", check-cfg = [
 [profile.release]
 opt-level = 'z'
 
+[profile.wasm-dev]
+inherits = "dev"
+opt-level = 1
+
+[profile.server-dev]
+inherits = "dev"
+
+[profile.android-dev]
+inherits = "dev"
+
 [patch.crates-io]
 wgcore-derive = { path = "../wgmath/crates/wgcore-derive" }
 wgcore = { path = "../wgmath/crates/wgcore" }
 wgebra = { path = "../wgmath/crates/wgebra" }
 
-encase = { path = "../encase" }
+encase = { git = "https://github.com/sebcrozet/encase", branch = "nalgebra-points" }

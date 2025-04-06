@@ -1,10 +1,10 @@
 use bytemuck::Pod;
 use nalgebra::DVector;
-use wgcore::kernel::{KernelInvocationBuilder, KernelInvocationQueue};
+use wgcore::kernel::{KernelDispatch, KernelInvocationBuilder, KernelInvocationQueue};
 use wgcore::tensor::GpuVectorView;
 use wgcore::Shader;
 use wgebra::linalg::Shape;
-use wgpu::ComputePipeline;
+use wgpu::{ComputePass, ComputePipeline};
 
 #[derive(Shader)]
 #[shader(derive(Shape), src = "silu.wgsl", composable = false)]
@@ -14,9 +14,10 @@ pub struct Silu {
 }
 
 impl Silu {
-    pub fn queue<'a, 'b, T: Pod>(
+    pub fn dispatch<'a, 'b, T: Pod>(
         &'a self,
-        queue: &mut KernelInvocationQueue<'a>,
+        queue: &KernelInvocationQueue<'a>,
+        pass: &mut ComputePass,
         in_out_h1: impl Into<GpuVectorView<'b, T>>,
         in_h2: impl Into<GpuVectorView<'b, T>>,
     ) {
@@ -25,9 +26,9 @@ impl Silu {
         let shape_h1 = queue.shape_buffer(h1.shape());
         let shape_h2 = queue.shape_buffer(h2.shape());
 
-        KernelInvocationBuilder::new(queue, &self.main)
+        KernelDispatch::new(queue.device(), pass, &self.main)
             .bind0([&shape_h1, &shape_h2, h1.buffer(), h2.buffer()])
-            .queue(h1.len().div_ceil(64));
+            .dispatch(h1.len().div_ceil(64));
     }
 
     pub fn run_cpu(h1: &mut DVector<f32>, h2: &DVector<f32>) {
@@ -45,7 +46,7 @@ impl Silu {
 mod test {
     use nalgebra::DVector;
     use wgcore::gpu::GpuInstance;
-    use wgcore::kernel::KernelInvocationQueue;
+    use wgcore::kernel::{CommandEncoderExt, KernelInvocationQueue};
     use wgcore::tensor::GpuVector;
     use wgcore::Shader;
     use wgpu::BufferUsages;
@@ -75,9 +76,10 @@ mod test {
             BufferUsages::MAP_READ | BufferUsages::COPY_DST,
         );
 
-        silu.queue(&mut queue, &gpu_h1, &gpu_h2);
+        let mut pass = encoder.compute_pass("test", None);
+        silu.dispatch(&mut queue, &mut pass, &gpu_h1, &gpu_h2);
+        drop(pass);
 
-        queue.encode(&mut encoder, None);
         gpu_staging_h1.copy_from(&mut encoder, &gpu_h1);
 
         gpu.queue().submit(Some(encoder.finish()));

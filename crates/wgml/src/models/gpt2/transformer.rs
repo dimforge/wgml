@@ -10,7 +10,7 @@ use wgcore::kernel::KernelInvocationQueue;
 use wgcore::tensor::{GpuMatrix, GpuScalar, GpuVector};
 use wgcore::Shader;
 use wgebra::linalg::{Gemv, OpAssign, OpAssignVariant};
-use wgpu::{BufferUsages, Device};
+use wgpu::{BufferUsages, ComputePass, Device};
 
 pub struct Gpt2State {
     memory_q: GpuVector<f32>,
@@ -263,9 +263,10 @@ impl Gpt2 {
         })
     }
 
-    pub fn queue<'a>(
+    pub fn dispatch<'a>(
         &'a self,
         queue: &mut KernelInvocationQueue<'a>,
+        pass: &mut ComputePass,
         state: &Gpt2State,
         weights: &Gpt2Weights,
         config: &Gpt2Params,
@@ -274,31 +275,32 @@ impl Gpt2 {
     ) {
         // Positional encoding.
         self.copy_from
-            .queue(queue, &state.layer_input, weights.wte.column(embd));
+            .dispatch(queue, pass, &state.layer_input, weights.wte.column(embd));
         self.add_assign
-            .queue(queue, &state.layer_input, weights.wpe.column(pos));
+            .dispatch(queue, pass, &state.layer_input, weights.wpe.column(pos));
 
         for layer in &weights.layers {
             // Layer norm.
             {
                 self.layernorm
-                    .queue(queue, &state.curr_768, &state.layer_input);
+                    .dispatch(queue, pass, &state.curr_768, &state.layer_input);
 
                 // cur = ln_1_g*cur + ln_1_b
-                self.mul_assign.queue(queue, &state.curr_768, &layer.ln_1_g);
-                self.add_assign.queue(queue, &state.curr_768, &layer.ln_1_b);
+                self.mul_assign.dispatch(queue, pass, &state.curr_768, &layer.ln_1_g);
+                self.add_assign.dispatch(queue, pass, &state.curr_768, &layer.ln_1_b);
             }
 
             // attn
             {
-                self.matmul.queue(
+                self.matmul.dispatch(
                     queue,
+                    pass,
                     &state.curr_2304,
                     &layer.c_attn_attn_w,
                     &state.curr_768,
                 );
                 self.add_assign
-                    .queue(queue, &state.curr_2304, &layer.c_attn_attn_b);
+                    .dispatch(queue, pass, &state.curr_2304, &layer.c_attn_attn_b);
             }
 
             // self-attention
@@ -306,20 +308,23 @@ impl Gpt2 {
                 let k_cache = layer.key_cache.column(pos);
                 let v_cache = layer.value_cache.column(pos);
 
-                self.copy_from.queue(
+                self.copy_from.dispatch(
                     queue,
+                    pass,
                     &state.memory_q,
                     state.curr_2304.rows(0, config.n_embd as u32),
                 );
-                self.copy_from.queue(
+                self.copy_from.dispatch(
                     queue,
+                    pass,
                     k_cache,
                     state
                         .curr_2304
                         .rows(config.n_embd as u32, config.n_embd as u32),
                 );
-                self.copy_from.queue(
+                self.copy_from.dispatch(
                     queue,
+                    pass,
                     v_cache,
                     state
                         .curr_2304
@@ -327,8 +332,9 @@ impl Gpt2 {
                 );
 
                 // attention.
-                self.attn.queue(
+                self.attn.dispatch(
                     queue,
+                    pass,
                     config.n_head as u32,
                     &state.attn_params,
                     &state.memory_q,
@@ -342,76 +348,78 @@ impl Gpt2 {
             // projection
             // cur = proj_w*cur + proj_b
             {
-                self.matmul.queue(
+                self.matmul.dispatch(
                     queue,
+                    pass,
                     &state.curr_768_b,
                     &layer.c_attn_proj_w,
                     &state.curr_768,
                 );
                 self.add_assign
-                    .queue(queue, &state.curr_768_b, &layer.c_attn_proj_b);
+                    .dispatch(queue, pass, &state.curr_768_b, &layer.c_attn_proj_b);
             }
 
             // add the input
             self.add_assign
-                .queue(queue, &state.curr_768_b, &state.layer_input);
+                .dispatch(queue, pass, &state.curr_768_b, &state.layer_input);
 
             // prep input for next layer
             self.copy_from
-                .queue(queue, &state.layer_input, &state.curr_768_b);
+                .dispatch(queue, pass, &state.layer_input, &state.curr_768_b);
 
             // feed-forward network
             {
                 // norm
                 {
                     self.layernorm
-                        .queue(queue, &state.curr_768, &state.curr_768_b);
+                        .dispatch(queue, pass, &state.curr_768, &state.curr_768_b);
 
                     // cur = ln_2_g*cur + ln_2_b
-                    self.mul_assign.queue(queue, &state.curr_768, &layer.ln_2_g);
-                    self.add_assign.queue(queue, &state.curr_768, &layer.ln_2_b);
+                    self.mul_assign.dispatch(queue, pass, &state.curr_768, &layer.ln_2_g);
+                    self.add_assign.dispatch(queue, pass, &state.curr_768, &layer.ln_2_b);
                 }
 
                 // fully connected
                 self.matmul
-                    .queue(queue, &state.curr_3072, &layer.c_mlp_fc_w, &state.curr_768);
+                    .dispatch(queue, pass, &state.curr_3072, &layer.c_mlp_fc_w, &state.curr_768);
                 self.add_assign
-                    .queue(queue, &state.curr_3072, &layer.c_mlp_fc_b);
+                    .dispatch(queue, pass, &state.curr_3072, &layer.c_mlp_fc_b);
 
                 // GELU activation
-                self.gelu.queue(queue, &state.curr_3072, None);
+                self.gelu.dispatch(queue, pass, &state.curr_3072, None);
 
                 // projection
-                self.matmul.queue(
+                self.matmul.dispatch(
                     queue,
+                    pass,
                     &state.curr_768,
                     &layer.c_mlp_proj_w,
                     &state.curr_3072,
                 );
                 self.add_assign
-                    .queue(queue, &state.curr_768, &layer.c_mlp_proj_b);
+                    .dispatch(queue, pass, &state.curr_768, &layer.c_mlp_proj_b);
             }
 
             // finalize input for next layer
             self.add_assign
-                .queue(queue, &state.layer_input, &state.curr_768);
+                .dispatch(queue, pass, &state.layer_input, &state.curr_768);
         }
 
         // norm
         {
             self.layernorm
-                .queue(queue, &state.curr_768, &state.layer_input);
+                .dispatch(queue, pass, &state.curr_768, &state.layer_input);
 
             // inpL = ln_f_g*inpL + ln_f_b
             self.mul_assign
-                .queue(queue, &state.curr_768, &weights.ln_f_g);
+                .dispatch(queue, pass, &state.curr_768, &weights.ln_f_g);
             self.add_assign
-                .queue(queue, &state.curr_768, &weights.ln_f_b);
+                .dispatch(queue, pass, &state.curr_768, &weights.ln_f_b);
         }
 
         // inpL = WTE * inpL
 
         self.matmul
-            .queue(queue, &state.curr_vocab, &weights.lm_head, &state.curr_768);
+            .dispatch(queue, pass, &state.curr_vocab, &weights.lm_head, &state.curr_768);
     }
 }

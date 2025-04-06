@@ -2,12 +2,12 @@ use crate::models::llama2::cpu::softmax;
 use crate::ops::SoftMax;
 use bytemuck::Pod;
 use nalgebra::{DMatrix, DVector};
-use wgcore::kernel::{KernelInvocationBuilder, KernelInvocationQueue};
+use wgcore::kernel::{KernelDispatch, KernelInvocationBuilder, KernelInvocationQueue};
 use wgcore::tensor::{ColumnMajor, GpuMatrix, GpuScalar, GpuVector};
 use wgcore::Shader;
 use wgebra::linalg::Shape;
-use wgebra::{Gemm, Gemv};
-use wgpu::ComputePipeline;
+use wgebra::{Gemm, Gemv, GemvVariant};
+use wgpu::{ComputePass, ComputePipeline, Queue};
 
 #[derive(Shader)]
 #[shader(
@@ -36,78 +36,86 @@ pub struct BatchedMultiqueryAttentionParams {
 }
 
 impl BatchedMultiqueryAttention {
-    // fn qeue_mult_mask<'a, T: Pod>(
-    //     &'a self,
-    //     queue: &mut KernelInvocationQueue<'a>,
-    //     params_cpu: &BatchedMultiqueryAttentionParams,
-    //     params: &GpuScalar<BatchedMultiqueryAttentionParams>,
-    //     attn: &GpuMatrix<T>,
-    // ) {
-    //     KernelInvocationBuilder::new(queue, &self.mult_mask_attn)
-    //         .bind_at(0, [(params.buffer(), 0), (attn.buffer(), 4)])
-    //         .queue((params_cpu.n_heads * (params_cpu.pos + 1)).div_ceil(64));
-    // }
+    fn dispatch_mult_mask<'a, T: Pod>(
+        &'a self,
+        queue: &KernelInvocationQueue<'a>,
+        pass: &mut ComputePass,
+        params: &BatchedMultiqueryAttentionParams,
+        params_gpu: &GpuScalar<BatchedMultiqueryAttentionParams>,
+        attn: &GpuMatrix<T>,
+    ) {
+        let rounded_pos = (params.pos + 1).div_ceil(4) * 4;
 
-    pub fn queue_multi<'a, T: Pod>(
-        queue: &mut KernelInvocationQueue<'a>,
+        KernelDispatch::new(queue.device(), pass, &self.mult_mask_attn)
+            .bind_at(0, [(params_gpu.buffer(), 0), (attn.buffer(), 4)])
+            .dispatch((params.n_heads * rounded_pos).div_ceil(64));
+    }
+
+    pub fn dispatch_multi<'a, T: Pod>(
+        &'a self,
+        queue: &KernelInvocationQueue<'a>,
+        gpu_queue: &Queue,
+        pass: &mut ComputePass,
         gemv: &'a Gemv,
         softmax: &'a SoftMax,
         params: &BatchedMultiqueryAttentionParams,
+        params_gpu: &GpuScalar<BatchedMultiqueryAttentionParams>,
         q: &GpuVector<T>,
         key_cache: &GpuMatrix<T>,
         value_cache: &GpuMatrix<T>,
         attn: &GpuMatrix<T>,
         xb: &GpuVector<T>,
     ) {
-        // [head_size, pos + 1, n_heads]
+        let n_q_heads = params.n_heads;
+        let n_kv_heads = n_q_heads / params.kv_mul;
+        // Pos rounded to a multiple of 4 to match the matmul element alignment.
+        let rounded_pos = (params.pos + 1).div_ceil(4) * 4;
+        // [head_size, pos + 1, n_kv_heads] -> [128, ..., 2] -> (transposed for gemv_tr: ) [..., 128, 2]
         let k = key_cache.reshape::<ColumnMajor, 3>(
-            [params.head_size, params.pos + 1, params.n_heads],
-            Some(params.head_size * params.n_heads),
+            [params.head_size, rounded_pos, n_kv_heads],
+            Some(params.head_size * n_kv_heads),
             Some(params.head_size),
         );
-        // [head_size, 1, n_heads]
-        let q = q.reshape::<ColumnMajor, 3>([params.head_size, 1, params.n_heads], None, None);
-        // [pos + 1, 1, n_heads]
-        let att = attn.reshape([params.pos + 1, 1, params.n_heads], None, None);
-        // [pos + 1, n_heads, 1]
+        // [head_size, kv_mul, n_kv_heads] -> [128, 6, 2]
+        let q =
+            q.reshape::<ColumnMajor, 3>([params.head_size, params.kv_mul, n_kv_heads], None, None);
+        // [pos + 1, kv_mul, n_kv_heads] -> [..., 6, 2]
+        let att = attn.reshape([rounded_pos, params.kv_mul, n_kv_heads], None, None);
+        // [pos + 1, n_q_heads, 1] -> [..., 12, 1]
         let att_softmax = attn
-            .reshape([params.pos + 1, params.n_heads, 1], None, None)
+            .reshape([params.pos + 1, n_q_heads, 1], Some(rounded_pos), None)
             .matrix(0);
-        // [head_size, pos + 1, n_heads]
+        // [head_size, pos + 1, n_kv_heads] -> [128, ..., 2]
         let v = value_cache.reshape::<ColumnMajor, 3>(
-            [params.head_size, params.pos + 1, params.n_heads],
-            Some(params.head_size * params.n_heads),
+            [params.head_size, rounded_pos, n_kv_heads],
+            Some(params.head_size * n_kv_heads),
             Some(params.head_size),
         );
-        // [head_size, 1, n_heads]
-        let xb = xb.reshape::<ColumnMajor, 3>([params.head_size, 1, params.n_heads], None, None);
+        // [head_size, kv_mul, n_kv_heads] -> [128, 6, 2]
+        let xb =
+            xb.reshape::<ColumnMajor, 3>([params.head_size, params.kv_mul, n_kv_heads], None, None);
 
-        gemv.queue_tr(queue, att, k, q);
-        softmax.queue(queue, att_softmax);
-        gemv.queue(queue, xb, v, att);
+        // gemv.queue_tr(queue, att, k, q);
+        // PERF: because we are taking a shapes depending on `pos` we will be
+        //       creating a new Buffer for the shape at each forward.
+        //       The shape cache should have a mechanism for updating some existing
+        //       buffers in-place? Or switch to a LRU cache?
 
-        // // PERF: deal with all heads simultaneously?
-        // for curr_head in 0..params.n_heads {
-        //     let head_start = curr_head * params.head_size;
-        //     let k = key_cache
-        //         .rows(head_start, params.head_size)
-        //         .columns(0, params.pos + 1);
-        //     let v = value_cache
-        //         .rows(head_start, params.head_size)
-        //         .columns(0, params.pos + 1);
-        //     let q = q.rows(head_start, params.head_size);
-        //     let xb = xb.rows(head_start, params.head_size);
-        //     let att = attn.column(curr_head).rows(0, params.pos + 1);
-        //
-        //     gemv.queue_tr(queue, att, k, q);
-        //     softmax.queue(queue, att);
-        //     gemv.queue(queue, xb, v, att);
-        // }
+        queue.shapes.put_tmp(queue.device(), gpu_queue, k.shape());
+        queue.shapes.put_tmp(queue.device(), gpu_queue, att.shape());
+        queue.shapes.put_tmp(queue.device(), gpu_queue, att_softmax.shape());
+        queue.shapes.put_tmp(queue.device(), gpu_queue, v.shape());
+
+        gemv.dispatch_generic(queue, pass, att, k, q, GemvVariant::GemvTrFast);
+        self.dispatch_mult_mask(queue, pass, params, params_gpu, &attn);
+        softmax.dispatch(queue, pass, att_softmax);
+        gemv.dispatch(queue, pass, xb, v, att);
     }
 
-    pub fn queue<'a, T: Pod>(
+    pub fn dispatch<'a, T: Pod>(
         &'a self,
-        queue: &mut KernelInvocationQueue<'a>,
+        queue: &KernelInvocationQueue<'a>,
+        pass: &mut ComputePass,
         n_heads: u32,
         params: &GpuScalar<BatchedMultiqueryAttentionParams>,
         q: &GpuVector<T>,
@@ -116,7 +124,7 @@ impl BatchedMultiqueryAttention {
         attn: &GpuMatrix<T>,
         xb: &GpuVector<T>,
     ) {
-        KernelInvocationBuilder::new(queue, &self.main)
+        KernelDispatch::new(queue.device(), pass, &self.main)
             .bind0([
                 params.buffer(),
                 q.buffer(),
@@ -125,7 +133,7 @@ impl BatchedMultiqueryAttention {
                 attn.buffer(),
                 xb.buffer(),
             ])
-            .queue(n_heads.div_ceil(64));
+            .dispatch(n_heads.div_ceil(64));
     }
 
     pub fn run_cpu(
@@ -163,7 +171,7 @@ impl BatchedMultiqueryAttention {
 
                 // Calculate the attention score as the dot product of q and k.
                 let mut score = q.dot(&k_head);
-                // score /= (head_size as f32).sqrt();
+                score /= (head_size as f32).sqrt();
                 // Save the score to the attention buffer.
                 att[t] = score;
             }
@@ -190,7 +198,7 @@ mod test {
     use crate::ops::{BatchedMultiqueryAttention, BatchedMultiqueryAttentionParams, SoftMax};
     use nalgebra::{DMatrix, DVector};
     use wgcore::gpu::GpuInstance;
-    use wgcore::kernel::KernelInvocationQueue;
+    use wgcore::kernel::{CommandEncoderExt, KernelInvocationQueue};
     use wgcore::tensor::{GpuMatrix, GpuScalar, GpuVector};
     use wgcore::Shader;
     use wgebra::{Gemm, Gemv};
@@ -205,20 +213,21 @@ mod test {
         let mut queue = KernelInvocationQueue::new(gpu.device());
         let mut encoder = gpu.device().create_command_encoder(&Default::default());
 
+        // let mut params = BatchedMultiqueryAttentionParams { seq_len: 131072, kv_dim: 256, kv_mul: 6, n_heads: 12, head_size: 128, pos: 9 };
         let params = BatchedMultiqueryAttentionParams {
             seq_len: 1024,
             kv_dim: 768,
             kv_mul: 1,
             n_heads: 12,
             head_size: 64,
-            pos: 7,
+            pos: 6,
         };
 
-        let q = DVector::new_random(params.kv_dim as usize);
+        let q = DVector::new_random((params.n_heads * params.head_size) as usize);
         let key_cache = DMatrix::new_random(params.kv_dim as usize, params.seq_len as usize);
         let value_cache = DMatrix::new_random(params.kv_dim as usize, params.seq_len as usize);
-        let mut attn = DMatrix::new_random(params.seq_len as usize, params.n_heads as usize);
-        let mut xb = DVector::new_random(params.kv_dim as usize);
+        let mut attn = DMatrix::zeros(params.seq_len as usize, params.n_heads as usize);
+        let mut xb = DVector::zeros((params.n_heads * params.head_size) as usize);
 
         let gpu_params = GpuScalar::init(gpu.device(), params, BufferUsages::UNIFORM);
         let gpu_q = GpuVector::init(gpu.device(), q.as_slice(), BufferUsages::STORAGE);
@@ -247,8 +256,10 @@ mod test {
             BufferUsages::MAP_READ | BufferUsages::COPY_DST,
         );
 
-        batched_multihead_attention.queue(
+        let mut pass = encoder.compute_pass("test", None);
+        batched_multihead_attention.dispatch(
             &mut queue,
+            &mut pass,
             params.n_heads,
             &gpu_params,
             &gpu_q,
@@ -257,8 +268,8 @@ mod test {
             &gpu_attn,
             &gpu_xb,
         );
+        drop(pass);
 
-        queue.encode(&mut encoder, None);
         gpu_staging_xb.copy_from(&mut encoder, &gpu_xb);
         gpu_staging_attn.copy_from(&mut encoder, &gpu_attn);
 
@@ -294,28 +305,27 @@ mod test {
     #[serial_test::serial]
     async fn gpu_attention_multi() {
         let gpu = GpuInstance::new().await.unwrap();
-        let mut queue = KernelInvocationQueue::new(gpu.device());
-        let mut encoder = gpu.device().create_command_encoder(&Default::default());
-
+        let batched_multihead_attention =
+            super::BatchedMultiqueryAttention::from_device(gpu.device()).unwrap();
         let matmul = Gemv::from_device(gpu.device()).unwrap();
         let softmax = SoftMax::from_device(gpu.device()).unwrap();
 
-        let params = BatchedMultiqueryAttentionParams {
+        // let mut params = BatchedMultiqueryAttentionParams { seq_len: 131072, kv_dim: 256, kv_mul: 6, n_heads: 12, head_size: 128, pos: 0 };
+        let mut params = BatchedMultiqueryAttentionParams {
             seq_len: 1024,
             kv_dim: 768,
             kv_mul: 1,
             n_heads: 12,
             head_size: 64,
-            pos: 7,
+            pos: 0,
         };
 
-        let q = DVector::new_random(params.kv_dim as usize);
+        let q = DVector::new_random((params.n_heads * params.head_size) as usize);
         let key_cache = DMatrix::new_random(params.kv_dim as usize, params.seq_len as usize);
         let value_cache = DMatrix::new_random(params.kv_dim as usize, params.seq_len as usize);
         let mut attn = DMatrix::zeros(params.seq_len as usize, params.n_heads as usize);
-        let mut xb = DVector::zeros(params.kv_dim as usize);
+        let mut xb = DVector::zeros((params.n_heads * params.head_size) as usize);
 
-        let gpu_params = GpuScalar::init(gpu.device(), params, BufferUsages::UNIFORM);
         let gpu_q = GpuVector::init(gpu.device(), q.as_slice(), BufferUsages::STORAGE);
         let gpu_key_cache = GpuMatrix::init(gpu.device(), &key_cache, BufferUsages::STORAGE);
         let gpu_value_cache = GpuMatrix::init(gpu.device(), &value_cache, BufferUsages::STORAGE);
@@ -342,47 +352,60 @@ mod test {
             BufferUsages::MAP_READ | BufferUsages::COPY_DST,
         );
 
-        BatchedMultiqueryAttention::queue_multi(
-            &mut queue,
-            &matmul,
-            &softmax,
-            &params,
-            &gpu_q,
-            &gpu_key_cache,
-            &gpu_value_cache,
-            &gpu_attn,
-            &gpu_xb,
-        );
+        for pos in 0..9 {
+            let mut queue = KernelInvocationQueue::new(gpu.device());
+            let mut encoder = gpu.device().create_command_encoder(&Default::default());
+            params.pos = pos;
 
-        queue.encode(&mut encoder, None);
-        gpu_staging_xb.copy_from(&mut encoder, &gpu_xb);
-        gpu_staging_attn.copy_from(&mut encoder, &gpu_attn);
+            let gpu_params = GpuScalar::init(gpu.device(), params, BufferUsages::UNIFORM);
 
-        gpu.queue().submit(Some(encoder.finish()));
+            let mut pass = encoder.compute_pass("test", None);
+            batched_multihead_attention.dispatch_multi(
+                &mut queue,
+                gpu.queue(),
+                &mut pass,
+                &matmul,
+                &softmax,
+                &params,
+                &gpu_params,
+                &gpu_q,
+                &gpu_key_cache,
+                &gpu_value_cache,
+                &gpu_attn,
+                &gpu_xb,
+            );
+            drop(pass);
 
-        super::BatchedMultiqueryAttention::run_cpu(
-            &params,
-            &q,
-            &key_cache,
-            &value_cache,
-            &mut attn,
-            &mut xb,
-        );
+            gpu_staging_xb.copy_from(&mut encoder, &gpu_xb);
+            gpu_staging_attn.copy_from(&mut encoder, &gpu_attn);
 
-        // approx::assert_relative_eq!(
-        //     DMatrix::from_vec(
-        //         attn.nrows(),
-        //         attn.ncols(),
-        //         gpu_staging_attn.read(gpu.device()).await.unwrap()
-        //     ),
-        //     attn,
-        //     epsilon = 1.0e-5
-        // );
+            gpu.queue().submit(Some(encoder.finish()));
 
-        approx::assert_relative_eq!(
-            DVector::from(gpu_staging_xb.read(gpu.device()).await.unwrap()),
-            xb,
-            epsilon = 1.0e-5
-        );
+            super::BatchedMultiqueryAttention::run_cpu(
+                &params,
+                &q,
+                &key_cache,
+                &value_cache,
+                &mut attn,
+                &mut xb,
+            );
+
+            // NOTE: we can’t compare attn since they don’t have the same layout.
+            // approx::assert_relative_eq!(
+            //     DMatrix::from_vec(
+            //         attn.nrows(),
+            //         attn.ncols(),
+            //         gpu_staging_attn.read(gpu.device()).await.unwrap()
+            //     ),
+            //     attn,
+            //     epsilon = 1.0e-5
+            // );
+
+            approx::assert_relative_eq!(
+                DVector::from(gpu_staging_xb.read(gpu.device()).await.unwrap()),
+                xb,
+                epsilon = 1.0e-5
+            );
+        }
     }
 }

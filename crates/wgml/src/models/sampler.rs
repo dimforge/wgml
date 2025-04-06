@@ -34,7 +34,7 @@ impl Sampler {
             // Greedy argmax sampling: take the token with the highest probability.
             Self::sample_argmax(logits)
         } else {
-            // Apply the temperature to the logits.
+            // // Apply the temperature to the logits.
             *logits /= self.temperature;
 
             // Apply softmax to the logits to get probabilities for next token.

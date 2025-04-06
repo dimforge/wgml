@@ -4,14 +4,14 @@ use crate::sampler::{sample_next_token, SamplerParams};
 use async_channel::Sender;
 use nalgebra::DVector;
 use wgcore::gpu::GpuInstance;
-use wgcore::kernel::KernelInvocationQueue;
+use wgcore::kernel::{CommandEncoderExt, KernelInvocationQueue};
 use wgcore::re_exports::bytemuck;
 use wgcore::re_exports::Device;
 use wgml::gguf::Gguf;
 use wgml::models::gpt2::cpu::Gpt2Params;
 use wgml::models::gpt2::{Gpt2, Gpt2State, Gpt2Tokenizer, Gpt2Weights};
 use wgml::models::sampler::Sampler;
-use wgml::ops::{BatchedMultiqueryAttentionParams, RoPEShape};
+use wgml::ops::{BatchedMultiqueryAttentionParams, RoPEConfig};
 
 pub struct ChatGpt2 {
     transformer: Gpt2,
@@ -69,28 +69,31 @@ impl ChatGpt2 {
 
             // let t0 = Instant::now();
             let mut queue = KernelInvocationQueue::new(gpu.device());
-            queue.compute_pass("main_pass", true);
-            self.transformer.queue(
-                &mut queue,
-                &self.state,
-                &self.weights,
-                &self.config,
-                token as u32,
-                pos as u32,
-            );
             // queue_time += t0.elapsed().as_secs_f64();
 
             // Run the transformer.
             // let t0 = Instant::now();
             let mut logits = {
                 let mut encoder = gpu.device().create_command_encoder(&Default::default());
+
+                let mut pass = encoder.compute_pass("main_pass", None);
+                self.transformer.dispatch(
+                    &mut queue,
+                    &mut pass,
+                    &self.state,
+                    &self.weights,
+                    &self.config,
+                    token as u32,
+                    pos as u32,
+                );
+                drop(pass);
+
                 gpu.queue().write_buffer(
                     self.state.attn_params().buffer(),
                     0,
                     bytemuck::cast_slice(&[attn_params]),
                 );
 
-                queue.encode(&mut encoder, None);
                 self.state
                     .logits_readback()
                     .copy_from(&mut encoder, self.state.logits());
@@ -110,8 +113,13 @@ impl ChatGpt2 {
             };
 
             // Find the token and loop.
-            let next =
-                sample_next_token(&mut sampler, &mut sampler_res, &logits, &prompt_toks, pos);
+            let next = sample_next_token(
+                &mut sampler,
+                &mut sampler_res,
+                &mut logits,
+                &prompt_toks,
+                pos,
+            );
             let prev_token = token;
             token = next;
 

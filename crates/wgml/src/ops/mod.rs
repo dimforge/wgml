@@ -19,8 +19,8 @@ pub use gemv_quant::{
 };
 pub use layernorm::LayerNorm;
 pub use quantization::Quantization;
-pub use rms_norm::RmsNorm;
-pub use rope::{RoPE, RoPEShape, RoPEVariant};
+pub use rms_norm::{RmsNorm, RmsNormConfig};
+pub use rope::{RoPE, RoPEConfig, RoPEVariant};
 pub use silu::Silu;
 pub use softmax::SoftMax;
 pub use unary::{Unary, UnaryInplace, UnaryOp};

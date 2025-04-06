@@ -20,7 +20,7 @@ mod tests {
     use bytemuck::Pod;
     use nalgebra::DVector;
     use wgcore::gpu::GpuInstance;
-    use wgcore::kernel::{KernelInvocation, KernelInvocationBuilder, KernelInvocationQueue};
+    use wgcore::kernel::{CommandEncoderExt, KernelDispatch, KernelInvocation, KernelInvocationBuilder, KernelInvocationQueue};
     use wgcore::tensor::GpuVector;
     use wgpu::{BufferUsages, ComputePipeline, Device};
 
@@ -81,7 +81,7 @@ mod tests {
         // Q8_0
         let in_q8_0 = DVector::from_fn(8, |i, _| {
             let scale = half::f16::from_f32(1.234).to_bits();
-            let mut data = [i as i8 * 32 + i8::MIN; 32];
+            let mut data = [i as i8 * 16 + i8::MIN; 32];
             data.iter_mut()
                 .enumerate()
                 .for_each((|(k, d)| *d += k as i8));
@@ -153,10 +153,10 @@ mod tests {
         let in_q8_k = DVector::from_fn(16, |i, _| {
             let scale = half::f16::from_f32(1.234).to_bits();
             let mid = 3;
-            let mut data = [i as i8 * 16 - 127; 256];
+            let mut data = [i as i8 * 8 - 127; 256];
             data.iter_mut()
                 .enumerate()
-                .for_each((|(k, d)| *d += k as i8));
+                .for_each((|(k, d)| *d = d.saturating_add(k as i8)));
             BlockQ8_K {
                 d: 1.234,
                 qs: data,
@@ -177,8 +177,12 @@ mod tests {
                 .iter_mut()
                 .enumerate()
                 .for_each((|(k, d)| *d += k as u8));
-            qs.iter_mut().enumerate().for_each((|(k, d)| *d += k as u8));
-            qh.iter_mut().enumerate().for_each((|(k, d)| *d += k as u8));
+            qs.iter_mut()
+                .enumerate()
+                .for_each((|(k, d)| *d = d.saturating_add(k as u8)));
+            qh.iter_mut()
+                .enumerate()
+                .for_each((|(k, d)| *d = d.saturating_add(k as u8)));
             BlockQ5_K {
                 d: scale1,
                 dmin: scale2,
@@ -201,8 +205,12 @@ mod tests {
                 .iter_mut()
                 .enumerate()
                 .for_each((|(k, d)| *d += k as u8));
-            qs.iter_mut().enumerate().for_each((|(k, d)| *d += k as u8));
-            qh.iter_mut().enumerate().for_each((|(k, d)| *d += k as u8));
+            qs.iter_mut()
+                .enumerate()
+                .for_each((|(k, d)| *d = d.saturating_add(k as u8)));
+            qh.iter_mut()
+                .enumerate()
+                .for_each((|(k, d)| *d = d.saturating_add(k as u8)));
             BlockQ4_K {
                 d: scale1,
                 dmin: scale2,
@@ -217,9 +225,9 @@ mod tests {
             let scale1 = half::f16::from_f32(1.234).to_bits();
             let scale2 = half::f16::from_f32(5.678).to_bits();
             let mid = 3;
-            let mut scales = [i as i8 * 16 - 127; 256 / 16];
-            let mut ql = [i as u8 * 16; 256 / 2];
-            let mut qh = [i as u8 * 16; 256 / 4];
+            let mut scales = [i as i8 * 8 - 127; 256 / 16];
+            let mut ql = [i as u8 * 8; 256 / 2];
+            let mut qh = [i as u8 * 8; 256 / 4];
             scales
                 .iter_mut()
                 .enumerate()
@@ -244,7 +252,9 @@ mod tests {
             .max(data_q8_k.in_vec.len())
             .max(data_q5_k.in_vec.len())
             .max(data_q4_k.in_vec.len());
-        KernelInvocationBuilder::new(&mut queue, &quant_test.dequantize)
+
+        let mut pass = encoder.compute_pass("test", None);
+        KernelDispatch::new(gpu.device(), &mut pass, &quant_test.dequantize)
             .bind0([
                 data_q8_0.in_buf.buffer(),
                 data_q8_0.out_buf.buffer(),
@@ -269,9 +279,9 @@ mod tests {
                 ],
             )
             .bind(2, [data_q6_k.in_buf.buffer(), data_q6_k.out_buf.buffer()])
-            .queue(max_len as u32);
+            .dispatch(max_len as u32);
+        drop(pass);
 
-        queue.encode(&mut encoder, None);
         data_q8_0
             .staging_buf
             .copy_from(&mut encoder, &data_q8_0.out_buf);

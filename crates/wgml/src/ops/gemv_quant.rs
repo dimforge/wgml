@@ -6,14 +6,14 @@ use naga_oil::compose::{ComposerError, ShaderDefValue};
 use rand::distributions::{Distribution, Standard};
 use rand::Rng;
 use std::collections::HashMap;
-use wgcore::kernel::{KernelInvocationBuilder, KernelInvocationQueue};
+use wgcore::kernel::{KernelDispatch, KernelInvocationBuilder, KernelInvocationQueue};
 use wgcore::tensor::{GpuMatrixView, GpuVectorView, RowMajor};
 use wgcore::Shader;
 use wgebra::linalg::{row_major_shader_defs, Shape};
 use wgebra::Gemv;
-use wgpu::ComputePipeline;
+use wgpu::{ComputePass, ComputePipeline};
 
-const USE_OPTIMIZED: bool = false;
+const USE_OPTIMIZED: bool = true;
 
 pub trait QuantizedValue {
     /// Number of dequantized elements the quantized value represents.
@@ -134,7 +134,7 @@ impl GemvQuant {
 #[derive(Shader)]
 #[shader(
     derive(Shape, Quantization),
-    src = "gemv_quant_q8_0x2_slow.wgsl",
+    src = "gemv_quant_q8_0x2.wgsl",
     shader_defs = "row_major_shader_defs",
     composable = false
 )]
@@ -170,7 +170,7 @@ pub struct GemvQ5_1x2 {
 #[derive(Shader)]
 #[shader(
     derive(Shape, Quantization),
-    src = "gemv_quant_q4_0x2_slow.wgsl",
+    src = "gemv_quant_q4_0x2.wgsl",
     shader_defs = "row_major_shader_defs",
     composable = false
 )]
@@ -206,7 +206,7 @@ pub struct GemvQ8_K {
 #[derive(Shader)]
 #[shader(
     derive(Shape, Quantization),
-    src = "gemv_quant_q6_kx2_slow.wgsl",
+    src = "gemv_quant_q6_kx2.wgsl",
     shader_defs = "row_major_shader_defs",
     composable = false
 )]
@@ -218,7 +218,7 @@ pub struct GemvQ6_Kx2 {
 #[derive(Shader)]
 #[shader(
     derive(Shape, Quantization),
-    src = "gemv_quant_q5_k_slow.wgsl",
+    src = "gemv_quant_q5_k.wgsl",
     shader_defs = "row_major_shader_defs",
     composable = false
 )]
@@ -230,7 +230,7 @@ pub struct GemvQ5_K {
 #[derive(Shader)]
 #[shader(
     derive(Shape, Quantization),
-    src = "gemv_quant_q4_k_slow.wgsl",
+    src = "gemv_quant_q4_k.wgsl",
     shader_defs = "row_major_shader_defs",
     composable = false
 )]
@@ -241,9 +241,10 @@ pub struct GemvQ4_K {
 
 impl GemvQuant {
     /// Queues this shader to compute `out = m * v`.
-    pub fn queue<'a, 'b>(
+    pub fn dispatch<'a, 'b>(
         &'a self,
-        queue: &mut KernelInvocationQueue<'a>,
+        queue: &KernelInvocationQueue<'a>,
+        pass: &mut ComputePass,
         out: impl Into<GpuVectorView<'b, f32>>,
         m: &GpuQuantMatrix,
         v: impl Into<GpuVectorView<'b, f32>>,
@@ -333,7 +334,7 @@ impl GemvQuant {
             GpuQuantMatrix::Q4_K(_) => optimized_dispatch,
         };
 
-        KernelInvocationBuilder::new(queue, &kernel)
+        KernelDispatch::new(queue.device(), pass, &kernel)
             .bind0([
                 &out_shape_buf,
                 &m_shape_buf,
@@ -342,6 +343,8 @@ impl GemvQuant {
                 m.buffer(),
                 v.buffer(),
             ])
-            .queue(dispatch);
+            .dispatch(dispatch);
     }
 }
+
+wgcore::test_shader_compilation!(GemvQ4_K);

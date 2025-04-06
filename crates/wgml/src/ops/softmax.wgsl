@@ -5,7 +5,7 @@ var<uniform> shape: Shape::Shape;
 @group(0) @binding(1)
 var<storage, read_write> in_out_mat: array<f32>;
 
-const WORKGROUP_SIZE: u32 = 128;
+const WORKGROUP_SIZE: u32 = 64;
 
 var<workgroup> workspace: array<f32, WORKGROUP_SIZE>;
 var<workgroup> the_max: f32;
@@ -34,12 +34,16 @@ fn main(@builtin(workgroup_id) workgroup_id: vec3<u32>, @builtin(local_invocatio
 
     // Compute the MAX
     let data_len = shape.nrows;
+    var my_max = -1.0e38;
+
     for (var i = thread_id; i < data_len; i += WORKGROUP_SIZE) {
         let val_i = in_out_mat[Shape::im(shape, i, j)];
-        workspace[thread_id] = max(workspace[thread_id], val_i);
+        my_max = max(my_max, val_i);
     }
 
-    reduce_max(thread_id, 64u);
+    workspace[thread_id] = my_max;
+
+//    reduce_max(thread_id, 64u);
     reduce_max(thread_id, 32u);
     reduce_max(thread_id, 16u);
     reduce_max(thread_id, 8u);
@@ -54,16 +58,18 @@ fn main(@builtin(workgroup_id) workgroup_id: vec3<u32>, @builtin(local_invocatio
     workgroupBarrier();
 
     // Compute the denominator (sum of exponentials).
-    workspace[thread_id] = 0.0;
+    var my_denominator = 0.0;
     for (var i = thread_id; i < data_len; i += WORKGROUP_SIZE) {
         let ii = Shape::im(shape, i, j);
         let val_i = in_out_mat[ii];
         let exp_i = exp(val_i - the_max);
-        workspace[thread_id] += exp_i;
+        my_denominator += exp_i;
         in_out_mat[ii] = exp_i;
     }
 
-    reduce_sum(thread_id, 64u);
+    workspace[thread_id] = my_denominator;
+
+//    reduce_sum(thread_id, 64u);
     reduce_sum(thread_id, 32u);
     reduce_sum(thread_id, 16u);
     reduce_sum(thread_id, 8u);

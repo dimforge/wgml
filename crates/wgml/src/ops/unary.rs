@@ -2,12 +2,12 @@ use bytemuck::Pod;
 use naga_oil::compose::{ComposerError, NagaModuleDescriptor};
 use naga_oil::redirect::Redirector;
 use nalgebra::{Dyn, StorageMut, Vector, Vector4};
-use wgcore::kernel::{KernelInvocationBuilder, KernelInvocationQueue};
+use wgcore::kernel::{KernelDispatch, KernelInvocationBuilder, KernelInvocationQueue};
 use wgcore::tensor::{GpuScalar, GpuVectorView};
 use wgcore::utils;
 use wgcore::Shader;
 use wgebra::{linalg::Shape, utils::WgTrig};
-use wgpu::{ComputePipeline, Device};
+use wgpu::{ComputePass, ComputePipeline, Device};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
@@ -154,9 +154,10 @@ impl Unary {
         ))
     }
 
-    pub fn queue<'a, 'b, T: Pod + nalgebra::Scalar>(
+    pub fn dispatch<'a, 'b, T: Pod + nalgebra::Scalar>(
         &'a self,
         queue: &mut KernelInvocationQueue<'a>,
+        pass: &mut ComputePass,
         dest: impl Into<GpuVectorView<'b, T>>,
         src: impl Into<GpuVectorView<'b, T>>,
         args: Option<&'b GpuScalar<Vector4<T>>>,
@@ -180,14 +181,14 @@ impl Unary {
                 src.buffer(),
                 args.buffer(),
             ];
-            KernelInvocationBuilder::new(queue, &self.0)
+            KernelDispatch::new(queue.device(), pass, &self.0)
                 .bind0(inputs)
-                .queue(workgroups);
+                .dispatch(workgroups);
         } else {
             let inputs = [&shape_dest, &shape_src, dest.buffer(), src.buffer()];
-            KernelInvocationBuilder::new(queue, &self.0)
+            KernelDispatch::new(queue.device(), pass, &self.0)
                 .bind0(inputs)
-                .queue(workgroups);
+                .dispatch(workgroups);
         };
     }
 
@@ -226,9 +227,10 @@ impl UnaryInplace {
         ))
     }
 
-    pub fn queue<'a, 'b, T: Pod + nalgebra::Scalar>(
+    pub fn dispatch<'a, 'b, T: Pod + nalgebra::Scalar>(
         &'a self,
         queue: &mut KernelInvocationQueue<'a>,
+        pass: &mut ComputePass,
         src: impl Into<GpuVectorView<'b, T>>,
         args: Option<&'b GpuScalar<Vector4<T>>>,
     ) {
@@ -243,14 +245,14 @@ impl UnaryInplace {
 
         if let Some(args) = &args {
             let inputs = [(&*shape_src, 1), (src.buffer(), 3), (args.buffer(), 4)];
-            KernelInvocationBuilder::new(queue, &self.0)
+            KernelDispatch::new(queue.device(), pass, &self.0)
                 .bind_at(0, inputs)
-                .queue(workgroups);
+                .dispatch(workgroups);
         } else {
             let inputs = [(&*shape_src, 1), (src.buffer(), 3)];
-            KernelInvocationBuilder::new(queue, &self.0)
+            KernelDispatch::new(queue.device(), pass, &self.0)
                 .bind_at(0, inputs)
-                .queue(workgroups);
+                .dispatch(workgroups);
         };
     }
 }
@@ -260,7 +262,7 @@ mod test {
     use crate::ops::UnaryOp;
     use nalgebra::{DVector, Vector4};
     use wgcore::gpu::GpuInstance;
-    use wgcore::kernel::KernelInvocationQueue;
+    use wgcore::kernel::{CommandEncoderExt, KernelInvocationQueue};
     use wgcore::tensor::{GpuScalar, GpuVector};
     use wgpu::BufferUsages;
 
@@ -315,9 +317,10 @@ mod test {
             let staging =
                 GpuVector::uninit(device, LEN, BufferUsages::MAP_READ | BufferUsages::COPY_DST);
 
-            unop.queue(&mut queue, &gpu_dst, &gpu_src, gpu_args.as_ref());
+            let mut pass = encoder.compute_pass("test", None);
+            unop.dispatch(&mut queue, &mut pass, &gpu_dst, &gpu_src, gpu_args.as_ref());
+            drop(pass);
 
-            queue.encode(&mut encoder, None);
             staging.copy_from(&mut encoder, &gpu_dst);
 
             gpu.queue().submit(Some(encoder.finish()));

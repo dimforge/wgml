@@ -2,6 +2,7 @@
 
 use crate::gguf::Gguf;
 use crate::models::llama2::LlamaModelType;
+use crate::ops::{BatchedMultiqueryAttentionParams, RmsNormConfig, RoPEConfig};
 use nalgebra::{
     vector, DMatrix, DVector, DVectorViewMut, Dyn, OMatrix, OVector, Rotation2, Storage,
     StorageMut, Vector,
@@ -59,6 +60,10 @@ pub struct Llama2Config {
     pub vocab_size: usize,
     /// Max sequence length.
     pub seq_len: usize,
+    /// The base frequency for Rotary Positional Encoding.
+    pub rope_base_freq: f32,
+    /// Nudge factor in the rms-norm kernel.
+    pub rms_norm_eps: f32,
 }
 
 impl Llama2Config {
@@ -70,6 +75,7 @@ impl Llama2Config {
     pub fn from_gguf(gguf: &Gguf) -> Self {
         Llama2Config::from_gguf_with_model_type(gguf, LlamaModelType::Llama)
     }
+
     pub fn from_gguf_with_model_type(gguf: &Gguf, model_type: LlamaModelType) -> Self {
         let model_name = model_type.gguf_model_name();
         let dim = format!("{model_name}.embedding_length");
@@ -78,6 +84,8 @@ impl Llama2Config {
         let n_q_heads = format!("{model_name}.attention.head_count");
         let n_kv_heads = format!("{model_name}.attention.head_count_kv");
         let seq_len = format!("{model_name}.context_length");
+        let base_freq = format!("{model_name}.rope.freq_base");
+        let rms_norm_eps = format!("{model_name}.attention.layer_norm_rms_epsilon");
 
         Self {
             dim: gguf.metadata[&dim].unwrap_u32() as usize,
@@ -87,7 +95,49 @@ impl Llama2Config {
             n_kv_heads: gguf.metadata[&n_kv_heads].unwrap_u32() as usize,
             vocab_size: gguf.metadata["tokenizer.ggml.tokens"].unwrap_array_len(),
             seq_len: gguf.metadata[&seq_len].unwrap_u32() as usize,
+            rope_base_freq: gguf
+                .metadata
+                .get(&base_freq)
+                .map(|x| x.as_f32())
+                .unwrap_or(10000.0),
+            rms_norm_eps: gguf
+                .metadata
+                .get(&rms_norm_eps)
+                .map(|x| x.as_f32())
+                .unwrap_or(1.0e-6),
         }
+    }
+
+    pub fn derived_configs(
+        &self,
+        token_pos: u32,
+    ) -> (RoPEConfig, RmsNormConfig, BatchedMultiqueryAttentionParams) {
+        let dim = self.dim;
+        let kv_dim = ((self.dim * self.n_kv_heads) / self.n_q_heads) as u32;
+        let head_size = (dim / self.n_q_heads) as u32;
+        let kv_mul = (self.n_q_heads / self.n_kv_heads) as u32;
+
+        let rope_config = RoPEConfig {
+            head_size,
+            kv_dim,
+            pos: token_pos,
+            base_freq: self.rope_base_freq,
+        };
+
+        let rms_norm_config = RmsNormConfig {
+            nudge_factor: self.rms_norm_eps,
+        };
+
+        let attn_params = BatchedMultiqueryAttentionParams {
+            seq_len: self.seq_len as u32,
+            kv_dim,
+            kv_mul,
+            n_heads: self.n_q_heads as u32,
+            head_size,
+            pos: token_pos,
+        };
+
+        (rope_config, rms_norm_config, attn_params)
     }
 }
 
@@ -101,6 +151,8 @@ impl From<RawConfig> for Llama2Config {
             n_kv_heads: c.n_kv_heads as usize,
             vocab_size: c.vocab_size.unsigned_abs() as usize,
             seq_len: c.seq_len as usize,
+            rope_base_freq: 10000.0,
+            rms_norm_eps: 1.0e-6,
         }
     }
 }

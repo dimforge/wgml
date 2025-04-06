@@ -1,10 +1,10 @@
 use bytemuck::Pod;
 use nalgebra::{Dyn, StorageMut, Vector};
-use wgcore::kernel::{KernelInvocationBuilder, KernelInvocationQueue};
+use wgcore::kernel::{KernelDispatch, KernelInvocationBuilder, KernelInvocationQueue};
 use wgcore::tensor::{GpuMatrixView, GpuVectorView};
 use wgcore::Shader;
 use wgebra::linalg::Shape;
-use wgpu::ComputePipeline;
+use wgpu::{ComputePass, ComputePipeline};
 
 #[derive(Shader)]
 #[shader(derive(Shape), src = "softmax.wgsl", composable = false)]
@@ -14,16 +14,17 @@ pub struct SoftMax {
 }
 
 impl SoftMax {
-    pub fn queue<'a, 'b, T: Pod>(
+    pub fn dispatch<'a, 'b, T: Pod>(
         &'a self,
-        queue: &mut KernelInvocationQueue<'a>,
+        queue: &KernelInvocationQueue<'a>,
+        pass: &mut ComputePass,
         in_out_mat: impl Into<GpuMatrixView<'b, T>>,
     ) {
         let in_out_mat = in_out_mat.into();
         let shape_buf = queue.shape_buffer(in_out_mat.shape());
-        KernelInvocationBuilder::new(queue, &self.main)
+        KernelDispatch::new(queue.device(), pass, &self.main)
             .bind0([&shape_buf, in_out_mat.buffer()])
-            .queue(in_out_mat.shape().size[1]);
+            .dispatch(in_out_mat.shape().size[1]);
     }
 
     /// The softmax function.
@@ -51,7 +52,7 @@ mod test {
     use crate::ops::SoftMax;
     use nalgebra::DVector;
     use wgcore::gpu::GpuInstance;
-    use wgcore::kernel::KernelInvocationQueue;
+    use wgcore::kernel::{CommandEncoderExt, KernelInvocationQueue};
     use wgcore::tensor::TensorBuilder;
     use wgcore::Shader;
     use wgpu::BufferUsages;
@@ -72,9 +73,10 @@ mod test {
         let staging = TensorBuilder::vector(LEN, BufferUsages::MAP_READ | BufferUsages::COPY_DST)
             .build(gpu.device());
 
-        softmax.queue(&mut queue, gpu_v0.as_embedded_view());
+        let mut pass = encoder.compute_pass("test", None);
+        softmax.dispatch(&mut queue, &mut pass, gpu_v0.as_embedded_view());
+        drop(pass);
 
-        queue.encode(&mut encoder, None);
         staging.copy_from(&mut encoder, &gpu_v0);
 
         gpu.queue().submit(Some(encoder.finish()));

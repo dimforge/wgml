@@ -19,9 +19,19 @@ struct Params {
 
 const BLOCK_SIZE: u32 = 64u;
 
+fn div_ceil4(a: u32) -> u32 {
+    return (a + 3u) / 4u;
+}
+
 @compute @workgroup_size(BLOCK_SIZE, 1, 1)
 fn mult_mask_attn(@builtin(global_invocation_id) invocation_id: vec3<u32>) {
-    attn[invocation_id] /= sqrt(f32(params.head_size));
+    let nonzero_len = params.pos + 1u;
+    let aligned_len = div_ceil4(params.pos + 1u) * 4u;
+    if invocation_id.x % aligned_len < nonzero_len  {
+        attn[invocation_id.x] /= sqrt(f32(params.head_size));
+    } else {
+        attn[invocation_id.x] = 0.0;
+    }
 }
 
 @compute @workgroup_size(BLOCK_SIZE, 1, 1)

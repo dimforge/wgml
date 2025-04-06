@@ -1,10 +1,10 @@
 use bytemuck::Pod;
 use nalgebra::DVector;
-use wgcore::kernel::{KernelInvocationBuilder, KernelInvocationQueue};
+use wgcore::kernel::{KernelDispatch, KernelInvocationBuilder, KernelInvocationQueue};
 use wgcore::tensor::GpuVectorView;
 use wgcore::Shader;
 use wgebra::linalg::Shape;
-use wgpu::ComputePipeline;
+use wgpu::{ComputePass, ComputePipeline};
 
 #[derive(Shader)]
 #[shader(derive(Shape), src = "layernorm.wgsl", composable = false)]
@@ -14,9 +14,10 @@ pub struct LayerNorm {
 }
 
 impl LayerNorm {
-    pub fn queue<'a, 'b, T: Pod>(
+    pub fn dispatch<'a, 'b, T: Pod>(
         &'a self,
         queue: &mut KernelInvocationQueue<'a>,
+        pass: &mut ComputePass,
         out_vec: impl Into<GpuVectorView<'b, T>>,
         in_vec: impl Into<GpuVectorView<'b, T>>,
     ) {
@@ -31,9 +32,9 @@ impl LayerNorm {
 
         let in_shape = queue.shape_buffer(in_vec.shape());
         let out_shape = queue.shape_buffer(out_vec.shape());
-        KernelInvocationBuilder::new(queue, &self.main)
+        KernelDispatch::new(queue.device(), pass, &self.main)
             .bind0([&in_shape, &out_shape, in_vec.buffer(), out_vec.buffer()])
-            .queue(1);
+            .dispatch(1);
     }
 
     /// The layernorm function.
@@ -55,7 +56,7 @@ mod test {
     use crate::ops::LayerNorm;
     use nalgebra::DVector;
     use wgcore::gpu::GpuInstance;
-    use wgcore::kernel::KernelInvocationQueue;
+    use wgcore::kernel::{CommandEncoderExt, KernelInvocationQueue};
     use wgcore::tensor::TensorBuilder;
     use wgcore::Shader;
     use wgpu::BufferUsages;
@@ -79,9 +80,10 @@ mod test {
         let staging = TensorBuilder::vector(LEN, BufferUsages::MAP_READ | BufferUsages::COPY_DST)
             .build(gpu.device());
 
-        layernorm.queue(&mut queue, &gpu_out, &gpu_v0);
+        let mut pass = encoder.compute_pass("test", None);
+        layernorm.dispatch(&mut queue, &mut pass, &gpu_out, &gpu_v0);
+        drop(pass);
 
-        queue.encode(&mut encoder, None);
         staging.copy_from(&mut encoder, &gpu_out);
 
         gpu.queue().submit(Some(encoder.finish()));

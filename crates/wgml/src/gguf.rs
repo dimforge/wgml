@@ -262,6 +262,14 @@ impl GgufMetadataValue {
         }
     }
 
+    pub fn as_f32(&self) -> f32 {
+        if let Self::F32(val) = self {
+            *val
+        } else {
+            panic!("unwrap: unexpected GGUF attribute type.")
+        }
+    }
+
     pub fn as_string(&self) -> &String {
         if let Self::String(val) = self {
             val

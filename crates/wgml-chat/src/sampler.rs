@@ -92,7 +92,7 @@ impl SamplerParams {
 pub fn sample_next_token(
     sampler: &mut SamplerChain,
     sampler_res: &mut SimpleSamplerResources,
-    logits: &DVector<f32>,
+    logits: &mut DVector<f32>,
     prompt_toks: &[usize],
     pos: usize,
 ) -> usize {
@@ -101,20 +101,45 @@ pub fn sample_next_token(
 
     // Find the token and loop.
     let is_forced_token = pos < prompt_toks.len() - 1;
-    let next = if is_forced_token {
-        prompt_toks[pos + 1]
+
+    const USE_OWN_SAMPLER: bool = true;
+    if USE_OWN_SAMPLER {
+        if is_forced_token {
+            prompt_toks[pos + 1]
+        } else {
+            let mut sampler = wgml::models::sampler::Sampler::new(logits.len(), 0.7, 0.95);
+            let next = sampler.sample(logits);
+            next
+        }
     } else {
-        // PERF: we are allocating too much for the logits (once for the readback, once here).
-        let mut logits = Logits::try_from_iter(logits.iter().copied()).unwrap();
-        sampler
-            .sample_token(sampler_res, &mut logits)
-            .unwrap()
-            .unwrap_or(0) as usize // Tokenizer::UNKNOWN as u32) as usize
-    };
+        let next = if is_forced_token {
+            prompt_toks[pos + 1]
+        } else {
+            // PERF: we are allocating too much for the logits (once for the readback, once here).
+            // println!("logits: {:?}", logits);
+            let t0 = std::time::Instant::now();
+            let mut logits = Logits::try_from_iter(logits.iter().copied()).unwrap();
+            println!("Logits recreate: {}", t0.elapsed().as_secs_f32());
 
-    sampler_res
-        .with_last_tokens_mut(&mut |tokens| tokens.push(next as u32))
-        .unwrap();
+            for logit in logits.iter_mut() {
+                logit.prob = logit.logit;
+            }
+            logits.ensure_softmax();
+            logits.set_softmax(true);
 
-    next
+            let t0 = std::time::Instant::now();
+            let res = sampler
+                .sample_token(sampler_res, &mut logits)
+                .unwrap()
+                .unwrap_or(0) as usize; // Tokenizer::UNKNOWN as u32) as usize
+            println!("Actual sampling: {}", t0.elapsed().as_secs_f32());
+            res
+        };
+
+        sampler_res
+            .with_last_tokens_mut(&mut |tokens| tokens.push(next as u32))
+            .unwrap();
+
+        next
+    }
 }

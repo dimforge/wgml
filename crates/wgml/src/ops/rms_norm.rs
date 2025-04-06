@@ -1,10 +1,10 @@
 use bytemuck::Pod;
 use nalgebra::{DVector, Dyn, Storage, Vector};
-use wgcore::kernel::{KernelInvocationBuilder, KernelInvocationQueue};
-use wgcore::tensor::GpuVectorView;
+use wgcore::kernel::{KernelDispatch, KernelInvocationBuilder, KernelInvocationQueue};
+use wgcore::tensor::{GpuScalar, GpuVectorView};
 use wgcore::Shader;
 use wgebra::linalg::Shape;
-use wgpu::ComputePipeline;
+use wgpu::{ComputePass, ComputePipeline};
 
 #[derive(Shader)]
 #[shader(derive(Shape), src = "rms_norm.wgsl", composable = false)]
@@ -13,10 +13,18 @@ pub struct RmsNorm {
     pub main: ComputePipeline,
 }
 
+#[repr(C)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Copy, Clone, Debug)]
+pub struct RmsNormConfig {
+    pub nudge_factor: f32,
+}
+
 impl RmsNorm {
-    pub fn queue<'a, 'b, T: Pod>(
+    pub fn dispatch<'a, 'b, T: Pod>(
         &'a self,
-        queue: &mut KernelInvocationQueue<'a>,
+        queue: &KernelInvocationQueue<'a>,
+        pass: &mut ComputePass,
+        config: &GpuScalar<RmsNormConfig>,
         result: impl Into<GpuVectorView<'b, T>>,
         value: impl Into<GpuVectorView<'b, T>>,
         weight: impl Into<GpuVectorView<'b, T>>,
@@ -29,7 +37,7 @@ impl RmsNorm {
         let weight_shape_buf = queue.shape_buffer(weight.shape());
         let result_shape_buf = queue.shape_buffer(result.shape());
 
-        KernelInvocationBuilder::new(queue, &self.main)
+        KernelDispatch::new(queue.device(), pass, &self.main)
             .bind0([
                 &value_shape_buf,
                 &weight_shape_buf,
@@ -37,8 +45,9 @@ impl RmsNorm {
                 value.buffer(),
                 weight.buffer(),
                 result.buffer(),
+                config.buffer(),
             ])
-            .queue(1);
+            .dispatch(1);
     }
 
     pub fn run_cpu<SW: Storage<f32, Dyn>>(
@@ -54,11 +63,11 @@ impl RmsNorm {
 
 #[cfg(test)]
 mod test {
-    use crate::ops::RmsNorm;
+    use crate::ops::{RmsNorm, RmsNormConfig};
     use nalgebra::DVector;
     use wgcore::gpu::GpuInstance;
-    use wgcore::kernel::KernelInvocationQueue;
-    use wgcore::tensor::GpuVector;
+    use wgcore::kernel::{CommandEncoderExt, KernelInvocationQueue};
+    use wgcore::tensor::{GpuScalar, GpuVector};
     use wgcore::Shader;
     use wgpu::BufferUsages;
 
@@ -89,9 +98,14 @@ mod test {
             BufferUsages::MAP_READ | BufferUsages::COPY_DST,
         );
 
-        rmsnorm.queue(&mut queue, &gpu_result, &gpu_value, &gpu_weight);
+        let config = GpuScalar::init(gpu.device(), RmsNormConfig {
+            nudge_factor: 1.0e-6
+        }, BufferUsages::UNIFORM);
 
-        queue.encode(&mut encoder, None);
+        let mut pass = encoder.compute_pass("test", None);
+        rmsnorm.dispatch(&mut queue, &mut pass, &config, &gpu_result, &gpu_value, &gpu_weight);
+        drop(pass);
+
         gpu_staging.copy_from(&mut encoder, &gpu_result);
 
         gpu.queue().submit(Some(encoder.finish()));

@@ -2,17 +2,17 @@ use crate::gguf::Gguf;
 use crate::models::llama2::cpu::{Llama2Config, TransformerLayerWeights, TransformerWeights};
 use crate::models::llama2::LlamaModelType;
 use crate::ops::{
-    BatchedMultiqueryAttention, BatchedMultiqueryAttentionParams, GemvQuant, RmsNorm, RoPE,
-    RoPEShape, RoPEVariant, Silu, SoftMax,
+    BatchedMultiqueryAttention, BatchedMultiqueryAttentionParams, GemvQuant, RmsNorm,
+    RmsNormConfig, RoPE, RoPEConfig, RoPEVariant, Silu, SoftMax,
 };
 use crate::quantized_matrix::GpuQuantMatrix;
 use naga_oil::compose::ComposerError;
 use nalgebra::{DMatrix, DVector};
 use wgcore::kernel::KernelInvocationQueue;
-use wgcore::tensor::{GpuMatrix, GpuScalar, GpuVector};
+use wgcore::tensor::{GpuMatrix, GpuScalar, GpuVector, RowMajor};
 use wgcore::Shader;
 use wgebra::linalg::{Gemv, OpAssign, OpAssignVariant};
-use wgpu::{BufferUsages, Device};
+use wgpu::{BufferUsages, ComputePass, Device, Queue};
 
 pub struct Llama2State {
     /// Activation at current time stamp.
@@ -39,17 +39,19 @@ pub struct Llama2State {
     // KV cache. Each Vec contains `layer` elements.
     key_cache: Vec<GpuMatrix<f32>>,
     value_cache: Vec<GpuMatrix<f32>>,
-    rope_shape: GpuScalar<RoPEShape>,
+    rope_config: GpuScalar<RoPEConfig>,
+    rms_norm_config: GpuScalar<RmsNormConfig>,
     attn_params: GpuScalar<BatchedMultiqueryAttentionParams>,
 }
 
 impl Llama2State {
     pub fn new(device: &Device, config: &Llama2Config) -> Self {
-        println!("config: {:?}", config);
         let q_head_size = config.dim / config.n_q_heads;
         let kv_dim = (config.dim * config.n_kv_heads) / config.n_q_heads;
         const STORAGE: BufferUsages = BufferUsages::STORAGE;
         const UNIFORM: BufferUsages = BufferUsages::UNIFORM;
+
+        let (rope_config, rms_norm_config, attn_params) = config.derived_configs(0);
 
         Self {
             x: GpuVector::uninit(device, config.dim as u32, STORAGE | BufferUsages::COPY_DST),
@@ -93,13 +95,22 @@ impl Llama2State {
                 config.vocab_size as u32,
                 BufferUsages::MAP_READ | BufferUsages::COPY_DST,
             ),
-            rope_shape: GpuScalar::uninit(device, UNIFORM | BufferUsages::COPY_DST),
-            attn_params: GpuScalar::uninit(device, UNIFORM | BufferUsages::COPY_DST),
+            rope_config: GpuScalar::init(device, rope_config, UNIFORM | BufferUsages::COPY_DST),
+            rms_norm_config: GpuScalar::init(
+                device,
+                rms_norm_config,
+                UNIFORM | BufferUsages::COPY_DST,
+            ),
+            attn_params: GpuScalar::init(device, attn_params, UNIFORM | BufferUsages::COPY_DST),
         }
     }
 
-    pub fn rope_shape(&self) -> &GpuScalar<RoPEShape> {
-        &self.rope_shape
+    pub fn rope_config(&self) -> &GpuScalar<RoPEConfig> {
+        &self.rope_config
+    }
+
+    pub fn rms_norm_config(&self) -> &GpuScalar<RmsNormConfig> {
+        &self.rms_norm_config
     }
 
     pub fn attn_params(&self) -> &GpuScalar<BatchedMultiqueryAttentionParams> {
@@ -285,9 +296,11 @@ impl Llama2 {
         })
     }
 
-    pub fn queue<'a>(
+    pub fn dispatch<'a>(
         &'a self,
-        queue: &mut KernelInvocationQueue<'a>,
+        queue: &KernelInvocationQueue<'a>,
+        gpu_queue: &Queue,
+        pass: &mut ComputePass<'a>,
         state: &Llama2State,
         weights: &Llama2Weights,
         config: &Llama2Config,
@@ -296,62 +309,109 @@ impl Llama2 {
     ) {
         for l in 0..config.n_layers {
             let wl = &weights.layers[l];
-            self.rms_norm
-                .queue(queue, &state.xb, &state.x, &wl.attn_norm);
+            self.rms_norm.dispatch(
+                queue,
+                pass,
+                &state.rms_norm_config,
+                &state.xb,
+                &state.x,
+                &wl.attn_norm,
+            );
 
+            // PERF: because we are taking a column depending on `pos` we will be
+            //       creating a new Buffer for the shape at each forward.
+            //       The shape cache should have a mechanism for updating some existing
+            //       buffers in-place? Or switch to a LRU cache?
             let k_cache = state.key_cache[l].column(pos);
             let v_cache = state.value_cache[l].column(pos);
 
-            self.matmul.queue(queue, &state.q, &wl.attn_q, &state.xb);
-            self.matmul.queue(queue, k_cache, &wl.attn_k, &state.xb);
-            self.matmul.queue(queue, v_cache, &wl.attn_v, &state.xb);
+            if l == 0 {
+                queue.shapes.put_tmp(queue.device(), gpu_queue, k_cache.shape());
+                queue.shapes.put_tmp(queue.device(), gpu_queue, v_cache.shape());
+                queue.shapes.put_tmp(queue.device(), gpu_queue, k_cache.shape().f32_to_vec4::<RowMajor>());
+                queue.shapes.put_tmp(queue.device(), gpu_queue, v_cache.shape().f32_to_vec4::<RowMajor>());
+            }
+
+            self.matmul
+                .dispatch(queue, pass, &state.q, &wl.attn_q, &state.xb);
+            self.matmul
+                .dispatch(queue, pass, k_cache, &wl.attn_k, &state.xb);
+            self.matmul
+                .dispatch(queue, pass, v_cache, &wl.attn_v, &state.xb);
 
             if let Some(q_bias) = &wl.attn_q_bias {
-                self.add_assign.queue(queue, &state.q, q_bias);
+                self.add_assign.dispatch(queue, pass, &state.q, q_bias);
             }
             if let Some(k_bias) = &wl.attn_k_bias {
-                self.add_assign.queue(queue, k_cache, k_bias);
+                self.add_assign.dispatch(queue, pass, k_cache, k_bias);
             }
             if let Some(v_bias) = &wl.attn_v_bias {
-                self.add_assign.queue(queue, v_cache, v_bias);
+                self.add_assign.dispatch(queue, pass, v_cache, v_bias);
             }
 
+
             let rope_variant = self.model_type.rope_variant();
-            self.rope
-                .queue(queue, rope_variant, &state.rope_shape, &state.q, k_cache);
+            self.rope.dispatch(
+                queue,
+                pass,
+                rope_variant,
+                &state.rope_config,
+                &state.q,
+                k_cache,
+            );
 
             // Start attention.
-            self.queue_attn(queue, state, weights, config, l, attn_params, pos);
+            self.dispatch_attn(queue, gpu_queue, pass, state, weights, config, l, attn_params, pos);
+
 
             self.matmul
-                .queue(queue, &state.xb2, &wl.attn_output, &state.xb);
+                .dispatch(queue, pass, &state.xb2, &wl.attn_output, &state.xb);
             // End attention.
 
-            self.add_assign.queue(queue, &state.x, &state.xb2);
-            self.rms_norm
-                .queue(queue, &state.xb, &state.x, &wl.ffn_norm);
+            self.add_assign.dispatch(queue, pass, &state.x, &state.xb2);
+            self.rms_norm.dispatch(
+                queue,
+                pass,
+                &state.rms_norm_config,
+                &state.xb,
+                &state.x,
+                &wl.ffn_norm,
+            );
 
             // Start ffn_silu
-            self.matmul.queue(queue, &state.hb, &wl.ffn_gate, &state.xb);
-            self.matmul.queue(queue, &state.hb2, &wl.ffn_up, &state.xb);
-            self.silu.queue(queue, &state.hb, &state.hb2);
             self.matmul
-                .queue(queue, &state.xb2, &wl.ffn_down, &state.hb);
+                .dispatch(queue, pass, &state.hb, &wl.ffn_gate, &state.xb);
+            self.matmul
+                .dispatch(queue, pass, &state.hb2, &wl.ffn_up, &state.xb);
+            self.silu.dispatch(queue, pass, &state.hb, &state.hb2);
+            self.matmul
+                .dispatch(queue, pass, &state.xb2, &wl.ffn_down, &state.hb);
             // End ffn_silu
 
-            self.add_assign.queue(queue, &state.x, &state.xb2);
+            self.add_assign.dispatch(queue, pass, &state.x, &state.xb2);
         }
 
-        self.rms_norm
-            .queue(queue, &state.xb, &state.x, &weights.output_norm);
+        self.rms_norm.dispatch(
+            queue,
+            pass,
+            &state.rms_norm_config,
+            &state.xb,
+            &state.x,
+            &weights.output_norm,
+        );
 
         self.matmul
-            .queue(queue, &state.logits, &weights.output, &state.xb);
+            .dispatch(queue, pass, &state.logits, &weights.output, &state.xb);
+
+        // // PERF: Softwax the logits so we don’t have to do it on the cpu side in the sampler?
+        // self.soft_max.dispatch(queue, pass, &state.logits);
     }
 
-    fn queue_attn<'a>(
+    fn dispatch_attn<'a>(
         &'a self,
-        queue: &mut KernelInvocationQueue<'a>,
+        queue: &KernelInvocationQueue<'a>,
+        gpu_queue: &Queue,
+        pass: &mut ComputePass,
         state: &Llama2State,
         weights: &Llama2Weights,
         config: &Llama2Config,
@@ -359,27 +419,35 @@ impl Llama2 {
         attn_params: &BatchedMultiqueryAttentionParams,
         pos: u32,
     ) {
-        // BatchedMultiqueryAttention::queue_multi(
-        //     queue,
-        //     &self.matmul.gemv_f32,
-        //     &self.soft_max,
-        //     &attn_params,
-        //     &state.q,
-        //     &state.key_cache[layer],
-        //     &state.value_cache[layer],
-        //     &state.att,
-        //     &state.xb,
-        // );
+        const USE_MATMUL_ATTN: bool = true;
 
-        self.attn.queue(
-            queue,
-            config.n_q_heads as u32,
-            &state.attn_params,
-            &state.q,
-            &state.key_cache[layer],
-            &state.value_cache[layer],
-            &state.att,
-            &state.xb,
-        );
+        if USE_MATMUL_ATTN {
+            self.attn.dispatch_multi(
+                queue,
+                gpu_queue,
+                pass,
+                &self.matmul.gemv_f32,
+                &self.soft_max,
+                &attn_params,
+                &state.attn_params,
+                &state.q,
+                &state.key_cache[layer],
+                &state.value_cache[layer],
+                &state.att,
+                &state.xb,
+            );
+        } else {
+            self.attn.dispatch(
+                queue,
+                pass,
+                config.n_q_heads as u32,
+                &state.attn_params,
+                &state.q,
+                &state.key_cache[layer],
+                &state.value_cache[layer],
+                &state.att,
+                &state.xb,
+            );
+        }
     }
 }

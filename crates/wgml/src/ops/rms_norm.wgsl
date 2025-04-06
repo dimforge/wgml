@@ -11,11 +11,15 @@ var<storage, read> v: array<f32>;
 @group(0) @binding(4)
 var<storage, read> w: array<f32>;
 @group(0) @binding(5)
-var<storage, read_write> out: array<f32>; 
+var<storage, read_write> out: array<f32>;
+@group(0) @binding(6)
+var<uniform> config: RmsNormConfig;
 
+struct RmsNormConfig {
+    nudge_factor: f32,
+}
 
 const WORKGROUP_SIZE: u32 = 128;
-const NUDGE_FACTOR: f32 = 1.0e-6;
 
 /*
  * Magnitude.
@@ -55,7 +59,7 @@ fn main(@builtin(global_invocation_id) invocation_id: vec3<u32>) {
     let magnitude_sq = magnitude_squared(invocation_id.x);
 
     let len = shape_v.nrows;
-    let rms = 1.0 / sqrt((magnitude_sq / f32(len)) + NUDGE_FACTOR);
+    let rms = 1.0 / sqrt((magnitude_sq / f32(len)) + config.nudge_factor);
 
     for (var i = invocation_id.x; i < len; i += WORKGROUP_SIZE) {
         out[Shape::iv(shape_out, i)] = (v[Shape::iv(shape_v, i)] * rms) * w[Shape::iv(shape_w, i)];

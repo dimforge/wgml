@@ -1,10 +1,10 @@
 use bytemuck::Pod;
 use nalgebra::{vector, DVector, DVectorViewMut, Rotation2};
-use wgcore::kernel::{KernelInvocationBuilder, KernelInvocationQueue};
+use wgcore::kernel::{KernelDispatch, KernelInvocationBuilder, KernelInvocationQueue};
 use wgcore::tensor::{GpuScalar, GpuVectorView};
 use wgcore::Shader;
 use wgebra::linalg::Shape;
-use wgpu::ComputePipeline;
+use wgpu::{ComputePass, ComputePipeline};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum RoPEVariant {
@@ -26,18 +26,20 @@ pub struct RoPE {
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Copy, Clone)]
 /// Parameters needed to run the [`RoPE`] kernel. Matches the layout of the
 /// corresponding WGSL struct.
-pub struct RoPEShape {
+pub struct RoPEConfig {
     pub head_size: u32,
     pub kv_dim: u32,
     pub pos: u32,
+    pub base_freq: f32,
 }
 
 impl RoPE {
-    pub fn queue<'a, 'b, T: Pod>(
+    pub fn dispatch<'a, 'b, T: Pod>(
         &'a self,
-        queue: &mut KernelInvocationQueue<'a>,
+        queue: &KernelInvocationQueue<'a>,
+        pass: &mut ComputePass,
         variant: RoPEVariant,
-        shape: &GpuScalar<RoPEShape>,
+        shape: &GpuScalar<RoPEConfig>,
         in_out_q: impl Into<GpuVectorView<'b, T>>,
         in_out_k: impl Into<GpuVectorView<'b, T>>,
     ) {
@@ -59,7 +61,7 @@ impl RoPE {
             RoPEVariant::Neox => &self.main_neox,
         };
 
-        KernelInvocationBuilder::new(queue, pipeline)
+        KernelDispatch::new(queue.device(), pass, pipeline)
             .bind0([
                 &shape_q,
                 &shape_k,
@@ -68,7 +70,7 @@ impl RoPE {
                 in_out_k.buffer(),
             ])
             // Use `q` as the reference for the workgroup count since it is a bigger vector.
-            .queue((in_out_q.len() / 2).div_ceil(64));
+            .dispatch((in_out_q.len() / 2).div_ceil(64));
     }
 
     // Rotary Positional Encoding (RoPE): complex-valued rotate q and k in each head.
@@ -114,11 +116,11 @@ impl RoPE {
 
 #[cfg(test)]
 mod test {
-    use super::RoPEShape;
+    use super::RoPEConfig;
     use crate::ops::{RoPE, RoPEVariant};
     use nalgebra::DVector;
     use wgcore::gpu::GpuInstance;
-    use wgcore::kernel::KernelInvocationQueue;
+    use wgcore::kernel::{CommandEncoderExt, KernelInvocationQueue};
     use wgcore::tensor::TensorBuilder;
     use wgcore::Shader;
     use wgpu::BufferUsages;
@@ -135,10 +137,11 @@ mod test {
         const LEN_Q: u32 = 13 * HEAD_SIZE;
         const LEN_K: u32 = 9 * HEAD_SIZE;
 
-        let rope_indices = RoPEShape {
+        let rope_indices = RoPEConfig {
             head_size: HEAD_SIZE,
             kv_dim: LEN_K,
             pos: 10,
+            base_freq: 1.0e4,
         };
 
         let mut q = DVector::new_random(LEN_Q as usize);
@@ -157,15 +160,17 @@ mod test {
             TensorBuilder::vector(LEN_K, BufferUsages::MAP_READ | BufferUsages::COPY_DST)
                 .build(gpu.device());
 
-        rope.queue(
+        let mut pass = encoder.compute_pass("test", None);
+        rope.dispatch(
             &mut queue,
+            &mut pass,
             RoPEVariant::Original,
             &gpu_indices,
             &gpu_q,
             &gpu_k,
         );
+        drop(pass);
 
-        queue.encode(&mut encoder, None);
         staging_q.copy_from(&mut encoder, &gpu_q);
         staging_k.copy_from(&mut encoder, &gpu_k);
 

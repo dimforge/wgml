@@ -185,7 +185,7 @@ impl BrowseApp {
     fn perf_ui(&mut self, ui: &mut Ui) {
         ui.collapsing("Performances", |ui| {
             ui.label(format!(
-                "{} tok/s − generated {} tokens",
+                "{:.2} tok/s − generated {} tokens",
                 self.tok_per_second, self.next_pos
             ));
         });

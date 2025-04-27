@@ -1,0 +1,49 @@
+[package]
+name = "wgml-chat-dioxus"
+version = "0.1.0"
+authors = ["Sébastien Crozet <sebcrozet@dimforge.com>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+wgcore = "0.2"
+wgml = {  version = "0.2", path = "../wgml" }
+
+nalgebra = "0.33"
+async-channel = "2"
+async-trait = "0.1"
+anyhow = "1"
+async-std = { version = "1", features = ["attributes"] }
+minijinja = "2.5"
+llm-samplers = "0.0.7"
+rand = { version = "0.8", features = ["getrandom"] }
+web-time = "1.1.0"
+
+# UI
+dioxus = { version = "0.6.0", features = [] }
+dioxus-markdown = "0.0.1"
+rfd = { version = "0.15", features = ["file-handle-inner"] }
+log = "0.4.19"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+regex = "1.11.1"
+futures-util = "0.3"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tracing-subscriber = "0.3"
+futures = "0.3.28"
+memmap2 = "0.9.4"
+colored = "3.0.0"
+
+# web:
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+
+
+[features]
+default = ["web"]
+web = ["dioxus/web"]
+desktop = ["dioxus/desktop"]
+mobile = ["dioxus/mobile"]

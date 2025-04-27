@@ -5,6 +5,7 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/wgml-bench/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/wgml-chat/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/wgml/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/wgml-chat-dioxus/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/crates/wgml-chat/target" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>

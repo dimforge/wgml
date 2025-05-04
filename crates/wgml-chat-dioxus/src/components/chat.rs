@@ -5,7 +5,6 @@ use dioxus_markdown::Markdown;
 use futures_util::StreamExt;
 use std::future::Future;
 use std::rc::Rc;
-use dioxus::html::b::shape_outside;
 
 #[component]
 pub fn User(mut text: String) -> Element {

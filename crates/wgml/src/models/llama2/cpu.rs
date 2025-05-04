@@ -312,7 +312,6 @@ impl RunState {
             hb: DVector::zeros(config.hidden_dim),
             hb2: DVector::zeros(config.hidden_dim),
             q: DVector::zeros(config.dim),
-            // TODO: for these two, the `kv_dim` doesn’t match the dimension in the field’s comment.
             key_cache: (0..config.n_layers)
                 .map(|_| DMatrix::zeros(kv_dim, config.seq_len))
                 .collect(),
@@ -366,15 +365,11 @@ pub fn softmax<S: StorageMut<f32, Dyn>>(vals: &mut Vector<f32, Dyn, S>) {
 }
 
 /// Most expensive part of the inference.
-// TODO llama2.c also takes the dimensions n and do, but it’s unclear if this isn’t just
-//      because the dimensions are not part of the float* input type.
 fn matmul<SOut: StorageMut<f32, Dyn>>(
     out: &mut Vector<f32, Dyn, SOut>,
     x: &DVector<f32>,
     w: &DMatrix<f32>,
 ) {
-    // TODO: parallelize per column? llama2.c paralelizes with openmp.
-    // TODO: use blast/faer?
     out.gemv(1.0, w, x, 0.0);
 }
 
@@ -391,7 +386,6 @@ impl Transformer {
         let head_size = dim / config.n_q_heads;
 
         // Copy the token embedding into x.
-        // TODO: rename `x` to `token_embedding`?
         s.x.copy_from(&w.token_embd.column(token));
 
         // Forward all the layers.
@@ -400,7 +394,6 @@ impl Transformer {
 
             // RMS norm before attention.
             // See https://youtu.be/Mn_9W1nCFLo?si=Ogz_O_6LUsumWovB&t=1367
-            // TODO: rename `xb` to `normalized_token_embedding`?
             rms_norm(&mut s.xb, &s.x, &wl.attn_norm);
 
             // Key and value point to the KV cache.
@@ -503,7 +496,6 @@ impl Transformer {
         let kv_mul = config.n_q_heads / config.n_kv_heads;
 
         // Multihead attention. Iterate over all head.
-        // TODO: in llama2.c, each head is iterated on in parallel.
         for h in 0..config.n_q_heads {
             // Get the query vector for this head.
             let q = s.q.rows(h * head_size, head_size);
@@ -545,7 +537,6 @@ impl Transformer {
         }
 
         // Final matmul to get the output of the attention.
-        // TODO: rename xb2 to `attention_output`?
         matmul(&mut s.xb2, &s.xb, &w.layers[l].attn_output);
     }
 

@@ -35,8 +35,12 @@ inherits = "dev"
 inherits = "dev"
 
 [patch.crates-io]
-wgcore-derive = { path = "../wgmath/crates/wgcore-derive" }
-wgcore = { path = "../wgmath/crates/wgcore" }
-wgebra = { path = "../wgmath/crates/wgebra" }
+#wgcore-derive = { path = "../wgmath/crates/wgcore-derive" }
+#wgcore = { path = "../wgmath/crates/wgcore" }
+#wgebra = { path = "../wgmath/crates/wgebra" }
+
+wgcore-derive = { git = "https://github.com/dimforge/wgmath", rev = "4ff7fab7ab35348d333b37e0bea1d82f7ef3363e" }
+wgcore = { git = "https://github.com/dimforge/wgmath", rev = "4ff7fab7ab35348d333b37e0bea1d82f7ef3363e" }
+wgebra = { git = "https://github.com/dimforge/wgmath", rev = "4ff7fab7ab35348d333b37e0bea1d82f7ef3363e" }
 
 encase = { git = "https://github.com/sebcrozet/encase", branch = "nalgebra-points" }

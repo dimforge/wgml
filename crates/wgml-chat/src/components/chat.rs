@@ -67,7 +67,7 @@ pub fn Assistant(text: String, bubble_index: usize, show_reasoning: Signal<Vec<b
 
                     if end_bytes < text.len() {
                         Markdown {
-                            src: "🤖 ".to_owned() + &text[end_bytes + THINK_CLOSE_TAG_LEN..].trim()
+                            src: "🤖 ".to_owned() + text[end_bytes + THINK_CLOSE_TAG_LEN..].trim()
                         }
                     }
                 }
@@ -101,32 +101,29 @@ pub fn Chat() -> Element {
     let chat_event_handler =
         use_coroutine(move |mut rx: UnboundedReceiver<ChatEvent>| async move {
             while let Some(event) = rx.next().await {
-                match event {
-                    ChatEvent::Token {
-                        string,
-                        next_pos: _,
-                        token_count,
-                        token_time,
-                    } => {
-                        let tok_per_second = if token_count == 0 {
-                            0.0
-                        } else {
-                            token_count as f64 / token_time
-                        };
-                        *tok_per_sec.write() = format!(
-                            "Generated {} tokens in {:.2}s ({:.2} tokens/second).",
-                            token_count, token_time, tok_per_second
-                        );
+                if let ChatEvent::Token {
+                    string,
+                    next_pos: _,
+                    token_count,
+                    token_time,
+                } = event
+                {
+                    let tok_per_second = if token_count == 0 {
+                        0.0
+                    } else {
+                        token_count as f64 / token_time
+                    };
+                    *tok_per_sec.write() = format!(
+                        "Generated {} tokens in {:.2}s ({:.2} tokens/second).",
+                        token_count, token_time, tok_per_second
+                    );
 
-                        let mut prompt_state = prompt_state.write();
-                        if let PromptResponse::Responding(ref mut curr) = &mut prompt_state.response
-                        {
-                            curr.push_str(&string)
-                        } else {
-                            prompt_state.response = PromptResponse::Responding(string);
-                        }
+                    let mut prompt_state = prompt_state.write();
+                    if let PromptResponse::Responding(ref mut curr) = &mut prompt_state.response {
+                        curr.push_str(&string)
+                    } else {
+                        prompt_state.response = PromptResponse::Responding(string);
                     }
-                    _ => {}
                 }
             }
         });

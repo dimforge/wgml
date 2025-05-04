@@ -1,0 +1,202 @@
+body {
+    background-color: #f4f4f4;
+    color: black;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 20px 0 100px; /* bottom = footer height */
+}
+
+#hero {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+
+#chat {
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Style the button that is used to open and close the collapsible content */
+.active_think_header, .think_header {
+    background-color: #eee;
+    color: #444;
+    cursor: pointer;
+    padding: 18px;
+    border: none;
+    width: 100%;
+    text-align: left;
+    outline: none;
+    font-size: 15px;
+    border-top-right-radius: 10px;
+    border-top-left-radius: 10px;
+}
+
+.think_header {
+    border-bottom-right-radius: 10px;
+    border-bottom-left-radius: 10px;
+}
+
+/* Add a background color to the button if it is clicked on (add the .active class with JS), and when you move the mouse over it (hover) */
+.active_think_header, .think_header:hover {
+    background-color: #ccc;
+}
+
+.think_header:after {
+    content: '\02795'; /* Unicode character for "plus" sign (+) */
+    font-size: 13px;
+    color: white;
+    float: right;
+    margin-left: 5px;
+}
+
+.active_think_header:after {
+    content: "\2796"; /* Unicode character for "minus" sign (-) */
+    font-size: 13px;
+    color: white;
+    float: right;
+    margin-left: 5px;
+}
+
+.metadata {
+    border: 2px solid gray;
+    background-color: #ebfff9;
+    border-radius: 10px;
+    width: 70%;
+    margin-left: auto;
+    margin-right: auto;
+    top: 20px;
+    padding: 15px;
+}
+
+
+.user {
+    border: 2px solid gray;
+    background-color: rgba(199, 255, 205, 0.65);
+    border-radius: 10px;
+    width: 70%;
+    margin-left: auto;
+    margin-right: auto;
+    margin-top: 20px;
+    top: 20px;
+    padding: 15px;
+}
+
+.assistant {
+    border: 2px solid gray;
+    background-color: #f3f8ff;
+    border-radius: 10px;
+    width: 70%;
+    margin-left: auto;
+    margin-right: auto;
+    margin-top: 20px;
+    top: 20px;
+    padding: 15px;
+}
+
+.think_text {
+    padding-left: 20px;
+    padding-right: 20px;
+    padding-bottom: 5px;
+}
+
+.think {
+    background-color: white;
+    border-radius: 10px;
+}
+
+#gguf {
+    width: fit-content;
+    text-align: left;
+    font-size: x-large;
+    color: black;
+    display: flex;
+    flex-direction: column;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+#gguf a {
+    color: black;
+    text-decoration: none;
+    margin-top: 20px;
+    margin: 10px 0px;
+    border: black 1px solid;
+    border-radius: 5px;
+    padding: 10px;
+}
+
+
+#gguf a:hover {
+    background-color: #ebfff9;
+    cursor: pointer;
+}
+
+#centered {
+    display: flex;
+    flex-direction: column;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+#header {
+    max-height: 250px;
+    margin-left: auto;
+    margin-right: auto;
+    margin-top: 40px;
+    text-align: left;
+    font-size: x-large;
+    margin-left: auto;
+    margin-right: auto;
+    display: flex;
+    flex-direction: column;
+}
+
+
+#header-text {
+    max-width: 40%;
+    margin-left: auto;
+    margin-right: auto;
+
+    border: 2px solid gray;
+    background-color: #f3f8ff;
+    border-radius: 10px;
+    padding: 10px;
+}
+
+#footer {
+    border: 2px solid gray;
+    background-color: #f3f8ff;
+    height: 70px;
+    left: 0px;
+    bottom: 0px;
+    position: fixed;
+    width: 100%;
+    display: flex;
+}
+
+#user_prompt {
+    width: 400px;
+    height: 47px;
+    resize: none;
+    display: flex;
+    margin-right: 20px;
+    margin-left: auto;
+    margin-top: 10px;
+}
+
+#submit {
+    margin-right: auto;
+    margin-top: 10px;
+    height: 53px;
+}
+
+#tok_per_sec {
+    margin-left: auto;
+    margin-right: auto;
+    width: fit-content;
+    margin-top: 10px;
+    color: lightseagreen;
+}

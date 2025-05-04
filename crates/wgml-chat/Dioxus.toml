@@ -3,7 +3,7 @@
 [web.app]
 
 # HTML title tag content
-title = "wgml-chat-dioxus"
+title = "wgml-chat"
 
 # include `assets` in web platform
 [web.resource]

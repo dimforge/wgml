@@ -1,5 +1,5 @@
 [package]
-name = "wgml-chat-dioxus"
+name = "wgml-chat"
 version = "0.1.0"
 authors = ["Sébastien Crozet <sebcrozet@dimforge.com>"]
 edition = "2021"

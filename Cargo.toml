@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/wgml", "crates/wgml-bench", "crates/wgml-chat-dioxus", "crates/wgml-chat-dioxus"]
+    "crates/wgml", "crates/wgml-bench", "crates/wgml-chat", "crates/wgml-chat"]
 resolver = "2"
 
 [workspace.dependencies]

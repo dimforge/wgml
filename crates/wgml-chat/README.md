@@ -1,18 +1,16 @@
-# Development
+# wgml-chat
 
-Your new jumpstart project includes basic organization with an organized `assets` folder and a `components` folder. 
-If you chose to develop with the router feature, you will also have a `views` folder.
+This is a basic chat interface for testing **wgml**. Currently only supports models of the Llama family and Qwen 2.
 
-### Serving Your App
-
-Run the following command in the root of your project to start developing with the default platform:
-
+To run natively:
 ```bash
-dx serve
+cargo run --features desktop
+```
+To run of the browser:
+```sh
+dx serve --release
 ```
 
-To run for a different platform, use the `--platform platform` flag. E.g.
-```bash
-dx serve --platform desktop
-```
-
+Note that due to the WebAssembly 4GB memory limitation, the size of the models that can be loaded when running the web
+version is fairly limited. Opening GGUF files that are too big wrt. that memory limit will crash with an out-of-memory
+error (that gits printed on the console only).

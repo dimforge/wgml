@@ -92,6 +92,23 @@ fn App() -> Element {
 
             }
         }
+        Some(Err(_e)) => {
+            rsx! {
+                p {
+                    strong {
+                        "WebGPU is not supported on this browser."
+                    }
+                }
+                p {
+                    "See ",
+                    a {
+                        href: "https://caniuse.com/webgpu",
+                        " caniuse.com"
+                    },
+                    " for a list of compatible browsers."
+                }
+            }
+        }
         _ => rsx! {},
     }
 }
